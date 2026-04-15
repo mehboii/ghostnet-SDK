@@ -1,13 +1,17 @@
 import { createIdentity, loadIdentity } from './crypto/identity.js';
 import { encrypt, decrypt, edPrivateToX25519, edPublicToX25519 } from './crypto/encryption.js';
+import { verify } from './crypto/signing.js';
 import { ConnectionError, PeerNotFoundError } from './errors.js';
 import { Logger } from './logger.js';
 import { Transport } from './transport.js';
 import type { GhostNetOptions, GhostNetEvents, Identity, IncomingMessage } from './types.js';
-import { hexToBytes } from '@noble/hashes/utils';
+import { hexToBytes, bytesToHex, randomBytes } from '@noble/hashes/utils';
+import { blake3 } from '@noble/hashes/blake3';
 
 const DEFAULT_ENDPOINT = 'wss://ghostnet-ji-production.up.railway.app';
 const MAX_MESSAGE_BYTES = 64 * 1024; // 64 KB max message payload
+const NONCE_REGISTRY_MAX = 10_000;   // Max tracked nonces before eviction
+const MESSAGE_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes — reject older messages
 
 /**
  * Main GhostNet SDK client.
@@ -32,8 +36,10 @@ export class GhostNet {
   private readonly logger: Logger;
   private transport: Transport | null = null;
   private identity: Identity | null = null;
-  /** Maps peer nodeId → hex-encoded Ed25519 public key, learned from relay announcements. */
-  private peerKeys: Map<string, string> = new Map();
+  /** Maps peer nodeId → raw 32-byte Ed25519 public key, verified via signature. */
+  private peerKeys: Map<string, Uint8Array> = new Map();
+  /** Set of seen message nonces (hex) for replay detection. */
+  private seenNonces: Set<string> = new Set();
   private listeners: { [K in keyof GhostNetEvents]: Set<GhostNetEvents[K]> } = {
     message: new Set(),
     error: new Set(),
@@ -225,7 +231,9 @@ export class GhostNet {
    * ```
    */
   async send(peerId: string, message: string): Promise<void> {
-    if (!this.transport?.connected) {
+    // Fix TOCTOU: capture transport reference before the check
+    const transport = this.transport;
+    if (!transport?.connected) {
       throw new ConnectionError('Not connected — call .connect() first');
     }
 
@@ -238,35 +246,39 @@ export class GhostNet {
 
     this.logger.debug(`Sending to ${peerId}: ${message.length} chars`);
 
-    // Look up peer's public key from the peer registry
-    const peerPublicKeyHex = this.peerKeys.get(peerId);
-    if (peerPublicKeyHex) {
-      // Encrypt with peer's X25519 public key
-      const peerX25519Pub = edPublicToX25519(hexToBytes(peerPublicKeyHex));
-      const encryptedPayload = encrypt(message, peerX25519Pub);
-      const payloadBase64 = btoa(String.fromCharCode(...encryptedPayload));
+    // Generate a unique nonce for replay protection
+    const nonce = bytesToHex(randomBytes(16));
 
-      this.transport.send(JSON.stringify({
+    const peerPubBytes = this.peerKeys.get(peerId);
+    if (peerPubBytes) {
+      // Encrypt with peer's X25519 public key
+      const peerX25519Pub = edPublicToX25519(peerPubBytes);
+      const encryptedPayload = encrypt(message, peerX25519Pub);
+
+      // Chunked base64 encoding to avoid call stack overflow on large payloads
+      const payloadBase64 = uint8ToBase64(encryptedPayload);
+
+      transport.send(JSON.stringify({
         type: 'message',
         from: this.identity!.nodeId,
         to: peerId,
         payload: payloadBase64,
         encrypted: true,
+        nonce,
         timestamp: Date.now(),
       }));
     } else {
-      // Peer key not yet known — send via relay with encryption flag off.
-      // The relay will reject this if the peer requires encryption.
       this.logger.warn(
-        `No public key for peer ${peerId} — message sent without E2E encryption. ` +
-        `Peer key will be learned on first handshake.`,
+        `No verified public key for peer ${peerId} — message sent without E2E encryption. ` +
+        `Peer key will be learned on first verified handshake.`,
       );
-      this.transport.send(JSON.stringify({
+      transport.send(JSON.stringify({
         type: 'message',
         from: this.identity!.nodeId,
         to: peerId,
         payload: message,
         encrypted: false,
+        nonce,
         timestamp: Date.now(),
       }));
     }
@@ -312,6 +324,71 @@ export class GhostNet {
 
   // ── Internals ─────────────────────────────────────────────────────
 
+  /**
+   * Check and record a message nonce. Returns false if replayed.
+   */
+  private checkNonce(nonce: string): boolean {
+    if (this.seenNonces.has(nonce)) {
+      return false;
+    }
+    this.seenNonces.add(nonce);
+    // Evict oldest entries when registry is full
+    if (this.seenNonces.size > NONCE_REGISTRY_MAX) {
+      const first = this.seenNonces.values().next().value;
+      if (first !== undefined) {
+        this.seenNonces.delete(first);
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Verify a peer_announce message signature.
+   *
+   * The announce must include:
+   *   - nodeId: claimed node ID
+   *   - publicKey: hex-encoded Ed25519 public key
+   *   - signature: hex-encoded Ed25519 signature over the message "ghostnet:announce:<nodeId>"
+   *
+   * We verify that:
+   *   1. The signature is valid for the claimed public key
+   *   2. The nodeId is the BLAKE3 hash of the public key (binding)
+   */
+  private verifyPeerAnnounce(
+    nodeId: string,
+    publicKeyHex: string,
+    signatureHex: string,
+  ): Uint8Array | null {
+    // Validate hex format
+    if (!/^[0-9a-f]{64}$/.test(publicKeyHex)) {
+      this.logger.warn(`Invalid public key format from peer ${nodeId}`);
+      return null;
+    }
+    if (!/^[0-9a-f]{128}$/.test(signatureHex)) {
+      this.logger.warn(`Invalid signature format from peer ${nodeId}`);
+      return null;
+    }
+
+    const pubBytes = hexToBytes(publicKeyHex);
+    const sigBytes = hexToBytes(signatureHex);
+
+    // Verify: the nodeId must be the BLAKE3 hash of this public key
+    const expectedNodeId = '0x' + bytesToHex(blake3(pubBytes));
+    if (expectedNodeId !== nodeId) {
+      this.logger.warn(`Peer ${nodeId}: public key does not match node ID (expected ${expectedNodeId})`);
+      return null;
+    }
+
+    // Verify signature over canonical announce message
+    const announceMsg = new TextEncoder().encode(`ghostnet:announce:${nodeId}`);
+    if (!verify(sigBytes, announceMsg, pubBytes)) {
+      this.logger.warn(`Peer ${nodeId}: invalid signature on announce`);
+      return null;
+    }
+
+    return pubBytes;
+  }
+
   private async handleIncoming(raw: Uint8Array | string): Promise<void> {
     const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
 
@@ -328,6 +405,8 @@ export class GhostNet {
       timestamp?: number;
       publicKey?: string;
       nodeId?: string;
+      signature?: string;
+      nonce?: string;
     };
     try {
       envelope = JSON.parse(text) as typeof envelope;
@@ -336,33 +415,53 @@ export class GhostNet {
       return;
     }
 
-    // Learn peer public keys from relay announcements
-    if (envelope.type === 'peer_announce' && envelope.nodeId && envelope.publicKey) {
-      if (/^[0-9a-f]{64}$/.test(envelope.publicKey)) {
-        this.peerKeys.set(envelope.nodeId, envelope.publicKey);
-        this.logger.debug(`Learned key for peer ${envelope.nodeId}`);
+    // ── peer_announce: verify signature before trusting public key ──
+    if (
+      envelope.type === 'peer_announce' &&
+      envelope.nodeId &&
+      envelope.publicKey &&
+      envelope.signature
+    ) {
+      const verifiedPub = this.verifyPeerAnnounce(
+        envelope.nodeId,
+        envelope.publicKey,
+        envelope.signature,
+      );
+      if (verifiedPub) {
+        this.peerKeys.set(envelope.nodeId, verifiedPub);
+        this.logger.debug(`Verified and stored key for peer ${envelope.nodeId}`);
       }
+      // Unsigned or invalid announces are silently dropped
     }
 
+    // ── message: replay check, timestamp check, decrypt ──
     if (envelope.type === 'message' && envelope.from && envelope.payload != null) {
+      // Replay protection: check nonce
+      if (envelope.nonce) {
+        if (!this.checkNonce(envelope.nonce)) {
+          this.logger.warn(`Replayed message from ${envelope.from}, dropping (nonce: ${envelope.nonce})`);
+          return;
+        }
+      }
+
+      // Timestamp freshness check
+      if (envelope.timestamp) {
+        const age = Math.abs(Date.now() - envelope.timestamp);
+        if (age > MESSAGE_MAX_AGE_MS) {
+          this.logger.warn(`Stale message from ${envelope.from} (age: ${Math.round(age / 1000)}s), dropping`);
+          return;
+        }
+      }
+
       let data: string;
 
       if (envelope.encrypted) {
         // Decrypt the payload using our X25519 private key
-        const privSeed = hexToBytes(this.identity!.privateKey).slice(0, 32);
-        const x25519Priv = edPrivateToX25519(privSeed);
-        const ciphertextBytes = Uint8Array.from(
-          atob(envelope.payload),
-          (c) => c.charCodeAt(0),
-        );
+        const x25519Priv = edPrivateToX25519(this.identity!.privateKeyBytes);
+        const ciphertextBytes = base64ToUint8(envelope.payload);
         data = decrypt(ciphertextBytes, x25519Priv);
       } else {
         data = envelope.payload;
-      }
-
-      // Learn the sender's public key if included
-      if (envelope.publicKey && envelope.from && /^[0-9a-f]{64}$/.test(envelope.publicKey)) {
-        this.peerKeys.set(envelope.from, envelope.publicKey);
       }
 
       const msg: IncomingMessage = {
@@ -391,4 +490,27 @@ export class GhostNet {
       (handler as (...a: unknown[]) => void)(...args);
     }
   }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/** Chunked Uint8Array → base64 (avoids call stack overflow on large arrays). */
+function uint8ToBase64(bytes: Uint8Array): string {
+  const CHUNK = 8192;
+  let result = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const chunk = bytes.subarray(i, Math.min(i + CHUNK, bytes.length));
+    result += String.fromCharCode(...chunk);
+  }
+  return btoa(result);
+}
+
+/** Base64 → Uint8Array. */
+function base64ToUint8(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }

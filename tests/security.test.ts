@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { GhostNet, ConnectionError, IdentityError, EncryptionError } from '../src/index.js';
 import { createIdentity, loadIdentity } from '../src/crypto/identity.js';
 import { encrypt, decrypt, edPrivateToX25519, edPublicToX25519 } from '../src/crypto/encryption.js';
-import { hexToBytes, randomBytes } from '@noble/hashes/utils';
+import { randomBytes } from '@noble/hashes/utils';
 
 describe('Security: Identity attacks', () => {
   it('rejects empty seed phrase', () => {
@@ -42,7 +42,7 @@ describe('Security: Identity attacks', () => {
   it('private key in identity cannot be used to impersonate with different seed', () => {
     const alice = createIdentity();
     const bob = createIdentity();
-    expect(alice.privateKey).not.toBe(bob.privateKey);
+    expect(Buffer.from(alice.privateKeyBytes)).not.toEqual(Buffer.from(bob.privateKeyBytes));
     expect(alice.nodeId).not.toBe(bob.nodeId);
   });
 });
@@ -50,8 +50,8 @@ describe('Security: Identity attacks', () => {
 describe('Security: Encryption attacks', () => {
   function makeRecipientKeys() {
     const id = createIdentity();
-    const pub = edPublicToX25519(hexToBytes(id.publicKey));
-    const priv = edPrivateToX25519(hexToBytes(id.privateKey).slice(0, 32));
+    const pub = edPublicToX25519(id.publicKeyBytes);
+    const priv = edPrivateToX25519(id.privateKeyBytes);
     return { id, pub, priv };
   }
 

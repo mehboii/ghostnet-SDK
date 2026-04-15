@@ -10,12 +10,16 @@ export interface GhostNetOptions {
 export interface Identity {
   /** BIP-39 mnemonic seed phrase (12 words). */
   seedPhrase: string;
-  /** Hex-encoded Ed25519 public key (64 hex chars). */
+  /** Raw 32-byte Ed25519 public key. */
+  publicKeyBytes: Uint8Array;
+  /** Hex-encoded Ed25519 public key (64 hex chars). For display/transmission only. */
   publicKey: string;
-  /** Hex-encoded Ed25519 private key (128 hex chars — 64-byte expanded seed). */
-  privateKey: string;
+  /** Raw 32-byte Ed25519 private key seed. Zeroed on dispose(). */
+  privateKeyBytes: Uint8Array;
   /** BLAKE3 hash of the public key, prefixed with "0x". */
   nodeId: string;
+  /** Zero all secret key material. Call when identity is no longer needed. */
+  dispose: () => void;
 }
 
 /** An incoming decrypted message from a peer. */

@@ -19,10 +19,11 @@ describe('FIXED: Prototype pollution via JSON.parse', () => {
 });
 
 describe('FIXED: Identity key exposure', () => {
-  it('JSON.stringify does NOT expose private key', () => {
+  it('JSON.stringify does NOT expose private key bytes', () => {
     const id = createIdentity();
     const serialized = JSON.stringify(id);
-    expect(serialized).not.toContain(id.privateKey);
+    // privateKeyBytes is non-enumerable Uint8Array — should not appear in JSON
+    expect(serialized).not.toContain('privateKeyBytes');
   });
 
   it('JSON.stringify does NOT expose seed phrase', () => {
@@ -37,9 +38,10 @@ describe('FIXED: Identity key exposure', () => {
     expect(Object.keys(parsed).sort()).toEqual(['nodeId', 'publicKey']);
   });
 
-  it('private key is still accessible as a property', () => {
+  it('private key bytes are still accessible as a property', () => {
     const id = createIdentity();
-    expect(id.privateKey).toMatch(/^[0-9a-f]{128}$/);
+    expect(id.privateKeyBytes).toBeInstanceOf(Uint8Array);
+    expect(id.privateKeyBytes).toHaveLength(32);
   });
 
   it('seed phrase is still accessible as a property', () => {
@@ -49,7 +51,7 @@ describe('FIXED: Identity key exposure', () => {
 
   it('private key does not appear in Object.keys', () => {
     const id = createIdentity();
-    expect(Object.keys(id)).not.toContain('privateKey');
+    expect(Object.keys(id)).not.toContain('privateKeyBytes');
     expect(Object.keys(id)).not.toContain('seedPhrase');
   });
 });

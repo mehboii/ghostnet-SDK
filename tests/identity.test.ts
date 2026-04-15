@@ -7,7 +7,10 @@ describe('Identity', () => {
 
     expect(id.seedPhrase.split(' ')).toHaveLength(12);
     expect(id.publicKey).toMatch(/^[0-9a-f]{64}$/);
-    expect(id.privateKey).toMatch(/^[0-9a-f]{128}$/);
+    expect(id.publicKeyBytes).toBeInstanceOf(Uint8Array);
+    expect(id.publicKeyBytes).toHaveLength(32);
+    expect(id.privateKeyBytes).toBeInstanceOf(Uint8Array);
+    expect(id.privateKeyBytes).toHaveLength(32);
     expect(id.nodeId).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
@@ -16,8 +19,8 @@ describe('Identity', () => {
     const restored = loadIdentity(original.seedPhrase);
 
     expect(restored.publicKey).toBe(original.publicKey);
-    expect(restored.privateKey).toBe(original.privateKey);
     expect(restored.nodeId).toBe(original.nodeId);
+    expect(Buffer.from(restored.privateKeyBytes)).toEqual(Buffer.from(original.privateKeyBytes));
   });
 
   it('produces different identities for different seed phrases', () => {

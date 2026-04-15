@@ -7,13 +7,14 @@ import type { Identity } from '../types.js';
 
 /**
  * Derive a 32-byte Ed25519 seed from a BIP-39 mnemonic.
- *
- * Uses the first 32 bytes of the 64-byte BIP-39 seed (no passphrase).
- * This matches the standard approach: BIP-39 seed → Ed25519 signing key.
+ * Zeroes the full 64-byte BIP-39 seed after slicing.
  */
 function seedFromMnemonic(mnemonic: string): Uint8Array {
-  const seed64 = bip39.mnemonicToSeedSync(mnemonic);
-  return seed64.slice(0, 32);
+  const seed64 = new Uint8Array(bip39.mnemonicToSeedSync(mnemonic));
+  const seed32 = new Uint8Array(32);
+  seed32.set(seed64.subarray(0, 32));
+  seed64.fill(0);
+  return seed32;
 }
 
 /**
@@ -21,6 +22,9 @@ function seedFromMnemonic(mnemonic: string): Uint8Array {
  *
  * The 12-word mnemonic is the master secret — store it safely.
  * The Ed25519 keypair and BLAKE3 node ID are deterministically derived.
+ *
+ * Call `identity.dispose()` when the identity is no longer needed to
+ * zero private key material from memory.
  *
  * @example
  * ```ts
@@ -58,38 +62,47 @@ export function loadIdentity(seedPhrase: string): Identity {
 
 /**
  * Derive the full identity (keypair + node ID) from a mnemonic.
+ *
+ * All key material is stored as Uint8Array to allow explicit zeroing.
+ * String hex representations are only created for public (non-secret) data.
  */
 function deriveIdentity(mnemonic: string): Identity {
+  // Derive seed — seedFromMnemonic zeroes the 64-byte parent
   const seed = seedFromMnemonic(mnemonic);
-  const privateKeyBytes = seed;
+
+  // Copy seed into private key buffer (seed is zeroed below)
+  const privateKeyBytes = new Uint8Array(32);
+  privateKeyBytes.set(seed);
+
   const publicKeyBytes = ed25519.getPublicKey(privateKeyBytes);
 
   // Node ID = BLAKE3 hash of the raw 32-byte public key, prefixed "0x"
   const nodeIdBytes = blake3(publicKeyBytes);
   const nodeId = '0x' + bytesToHex(nodeIdBytes);
+  const publicKey = bytesToHex(publicKeyBytes);
 
-  // Encode private key as 64-byte expanded form (seed || public) for compat
-  const fullPrivateKey = new Uint8Array(64);
-  fullPrivateKey.set(privateKeyBytes, 0);
-  fullPrivateKey.set(publicKeyBytes, 32);
-
-  const privateKeyHex = bytesToHex(fullPrivateKey);
-
-  // Zero out seed material from memory (best-effort in JS)
-  fullPrivateKey.fill(0);
+  // Zero the intermediate seed (privateKeyBytes is the live copy now)
   seed.fill(0);
+
+  let disposed = false;
 
   const identity: Identity = {
     seedPhrase: mnemonic,
-    publicKey: bytesToHex(publicKeyBytes),
-    privateKey: privateKeyHex,
+    publicKeyBytes: publicKeyBytes,
+    publicKey,
+    privateKeyBytes,
     nodeId,
+    dispose() {
+      if (!disposed) {
+        privateKeyBytes.fill(0);
+        disposed = true;
+      }
+    },
   };
 
-  // Prevent private key and seed phrase from leaking via JSON.stringify or console.log.
-  // They are still accessible as properties, but won't appear in serialization.
-  Object.defineProperty(identity, 'privateKey', {
-    value: privateKeyHex,
+  // Prevent secret fields from leaking via JSON.stringify or console.log.
+  Object.defineProperty(identity, 'privateKeyBytes', {
+    value: privateKeyBytes,
     enumerable: false,
     configurable: false,
   });
@@ -98,8 +111,13 @@ function deriveIdentity(mnemonic: string): Identity {
     enumerable: false,
     configurable: false,
   });
+  Object.defineProperty(identity, 'dispose', {
+    value: identity.dispose,
+    enumerable: false,
+    configurable: false,
+  });
 
-  // Custom toJSON to ensure serialization never includes secrets
+  // Custom toJSON — only public data
   Object.defineProperty(identity, 'toJSON', {
     value: () => ({
       publicKey: identity.publicKey,

@@ -1,4 +1,4 @@
-/** Minimal debug logger that is silent unless debug mode is enabled. */
+/** @internal Minimal debug logger that is silent unless debug mode is enabled. */
 export class Logger {
   private enabled: boolean;
 

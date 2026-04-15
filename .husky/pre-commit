@@ -1,0 +1,6 @@
+npx lint-staged
+
+# Run gitleaks if available
+if command -v gitleaks &> /dev/null; then
+  gitleaks protect --staged --verbose
+fi

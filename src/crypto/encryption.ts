@@ -115,6 +115,7 @@ export function decrypt(
 }
 
 /**
+ * @internal
  * Convert an Ed25519 private key seed (first 32 bytes) to an X25519 private key.
  *
  * Ed25519 and X25519 share the same underlying curve (Curve25519).
@@ -135,6 +136,7 @@ export function edPrivateToX25519(ed25519Seed: Uint8Array): Uint8Array {
 }
 
 /**
+ * @internal
  * Convert an Ed25519 public key to an X25519 public key.
  *
  * Uses the birational map from the Ed25519 (twisted Edwards) point

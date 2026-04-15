@@ -41,13 +41,24 @@ await gn.send('0x<peer-node-id>', 'hello from the mesh!');
 gn.disconnect();
 ```
 
+## Documentation
+
+| Guide | Description |
+| --- | --- |
+| [Getting Started](./docs/getting-started.md) | Installation, quickstart, and first steps |
+| [API Reference](./docs/api-reference.md) | Full method and type documentation |
+| [Identity & Crypto](./docs/identity-and-crypto.md) | How keys, encryption, and identity work |
+| [Error Handling](./docs/error-handling.md) | Error types, codes, and recovery patterns |
+| [Security Model](./docs/security.md) | Threat model, guarantees, and limitations |
+| [Examples](./docs/examples.md) | Node.js, Express, React, and two-node chat |
+
 ## API
 
 ### `new GhostNet(options?)`
 
 | Option     | Type      | Default                            | Description             |
 | ---------- | --------- | ---------------------------------- | ----------------------- |
-| `endpoint` | `string`  | `wss://ghostnet-ji-production...`  | WebSocket relay URL     |
+| `endpoint` | `string`  | `wss://ghostnet-ji-production...`  | WebSocket relay URL (wss:// only) |
 | `debug`    | `boolean` | `false`                            | Enable console logging  |
 
 ### Identity
@@ -69,7 +80,7 @@ gn.disconnect();
 
 | Method                    | Returns         | Description                        |
 | ------------------------- | --------------- | ---------------------------------- |
-| `.send(peerId, message)`  | `Promise<void>` | Send encrypted message to a peer   |
+| `.send(peerId, message)`  | `Promise<void>` | Send encrypted message to a peer (max 64 KB) |
 
 ### Events
 
@@ -89,7 +100,7 @@ All errors extend `GhostNetError` (which extends `Error`):
 - `EncryptionError` — encrypt/decrypt failures
 - `PeerNotFoundError` — unknown or unreachable peer (includes `.peerId`)
 
-## Crypto scheme
+## Crypto Scheme
 
 | Primitive         | Algorithm                        |
 | ----------------- | -------------------------------- |
@@ -99,16 +110,29 @@ All errors extend `GhostNetError` (which extends `Error`):
 | Key derivation    | HKDF-SHA256                      |
 | Message encryption| AES-256-GCM                      |
 
+All crypto primitives use audited [noble](https://paulmillr.com/noble/) libraries (Cure53 audit).
+
 ## Dependencies
 
 | Package           | Why                                                    |
 | ----------------- | ------------------------------------------------------ |
+| `@noble/ciphers`  | AES-256-GCM — audited, pure JS, cross-platform         |
 | `@noble/curves`   | Ed25519 + X25519 — audited, zero-dep, cross-platform   |
 | `@noble/hashes`   | BLAKE3, HKDF, SHA-256 — same family, audited           |
 | `bip39`           | BIP-39 mnemonic generation and validation              |
 | `ws`              | WebSocket client for Node.js (browsers use native WS)  |
 
-4 runtime deps. Zero peer deps.
+5 runtime deps. Zero peer deps.
+
+## Security
+
+- E2E encrypted messaging (X25519 + AES-256-GCM)
+- Forward secrecy via ephemeral keys
+- Private keys excluded from JSON serialization
+- `wss://` enforced — insecure endpoints rejected
+- No telemetry, no analytics, no phone-home
+- 64 KB message size limit
+- See [Security Model](./docs/security.md) for full details
 
 ## Roadmap
 

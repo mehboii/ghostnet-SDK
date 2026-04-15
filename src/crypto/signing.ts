@@ -1,6 +1,7 @@
 import { ed25519 } from '@noble/curves/ed25519';
 
 /**
+ * @internal
  * Sign a message with an Ed25519 private key seed.
  *
  * @param message - The data to sign.
@@ -17,6 +18,7 @@ export function sign(message: Uint8Array, privateKey: Uint8Array): Uint8Array {
 }
 
 /**
+ * @internal
  * Verify an Ed25519 signature.
  *
  * @param signature - 64-byte Ed25519 signature.

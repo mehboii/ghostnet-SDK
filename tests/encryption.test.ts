@@ -4,7 +4,7 @@ import { createIdentity } from '../src/crypto/identity.js';
 import { hexToBytes } from '@noble/hashes/utils';
 
 describe('Encryption', () => {
-  it('encrypts and decrypts a message roundtrip', async () => {
+  it('encrypts and decrypts a message roundtrip', () => {
     const recipient = createIdentity();
     const recipientPub = hexToBytes(recipient.publicKey);
     const recipientPrivSeed = hexToBytes(recipient.privateKey).slice(0, 32);
@@ -13,23 +13,23 @@ describe('Encryption', () => {
     const recipientX25519Priv = edPrivateToX25519(recipientPrivSeed);
 
     const plaintext = 'hello from the mesh';
-    const packet = await encrypt(plaintext, recipientX25519Pub);
-    const decrypted = await decrypt(packet, recipientX25519Priv);
+    const packet = encrypt(plaintext, recipientX25519Pub);
+    const decrypted = decrypt(packet, recipientX25519Priv);
 
     expect(decrypted).toBe(plaintext);
   });
 
-  it('produces different ciphertexts for the same plaintext (ephemeral keys)', async () => {
+  it('produces different ciphertexts for the same plaintext (ephemeral keys)', () => {
     const recipient = createIdentity();
     const recipientPub = edPublicToX25519(hexToBytes(recipient.publicKey));
 
-    const a = await encrypt('same message', recipientPub);
-    const b = await encrypt('same message', recipientPub);
+    const a = encrypt('same message', recipientPub);
+    const b = encrypt('same message', recipientPub);
 
     expect(Buffer.from(a).equals(Buffer.from(b))).toBe(false);
   });
 
-  it('fails to decrypt with wrong key', async () => {
+  it('fails to decrypt with wrong key', () => {
     const recipient = createIdentity();
     const wrongRecipient = createIdentity();
 
@@ -37,17 +37,17 @@ describe('Encryption', () => {
     const wrongPrivSeed = hexToBytes(wrongRecipient.privateKey).slice(0, 32);
     const wrongX25519Priv = edPrivateToX25519(wrongPrivSeed);
 
-    const packet = await encrypt('secret', recipientPub);
+    const packet = encrypt('secret', recipientPub);
 
-    await expect(decrypt(packet, wrongX25519Priv)).rejects.toThrow('Decryption failed');
+    expect(() => decrypt(packet, wrongX25519Priv)).toThrow('Decryption failed');
   });
 
-  it('fails on truncated packet', async () => {
+  it('fails on truncated packet', () => {
     const recipient = createIdentity();
     const recipientPrivSeed = hexToBytes(recipient.privateKey).slice(0, 32);
     const recipientX25519Priv = edPrivateToX25519(recipientPrivSeed);
 
     const shortPacket = new Uint8Array(10);
-    await expect(decrypt(shortPacket, recipientX25519Priv)).rejects.toThrow('Packet too short');
+    expect(() => decrypt(shortPacket, recipientX25519Priv)).toThrow('Packet too short');
   });
 });

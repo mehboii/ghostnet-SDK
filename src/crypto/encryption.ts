@@ -2,16 +2,10 @@ import { x25519, edwardsToMontgomeryPub, edwardsToMontgomeryPriv } from '@noble/
 import { hkdf } from '@noble/hashes/hkdf';
 import { sha256 } from '@noble/hashes/sha256';
 import { randomBytes } from '@noble/hashes/utils';
+import { gcm } from '@noble/ciphers/aes';
 import { EncryptionError } from '../errors.js';
 
 const HKDF_INFO = new TextEncoder().encode('ghostnet-packet-encryption');
-
-/** Copy a Uint8Array into a fresh ArrayBuffer (satisfies Web Crypto's BufferSource type). */
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const buf = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(buf).set(bytes);
-  return buf;
-}
 const NONCE_LENGTH = 12;
 const KEY_LENGTH = 32;
 const EPHEMERAL_PUB_LENGTH = 32;
@@ -23,23 +17,6 @@ const EPHEMERAL_PUB_LENGTH = 32;
  */
 function deriveAesKey(sharedSecret: Uint8Array): Uint8Array {
   return hkdf(sha256, sharedSecret, undefined, HKDF_INFO, KEY_LENGTH);
-}
-
-/**
- * Import raw bytes as a CryptoKey for AES-GCM.
- * Works in browsers and Node 18+ (via globalThis.crypto).
- */
-async function importAesKey(raw: Uint8Array): Promise<CryptoKey> {
-  // Copy into a fresh ArrayBuffer to satisfy Web Crypto's BufferSource type
-  const buf = new ArrayBuffer(raw.byteLength);
-  new Uint8Array(buf).set(raw);
-  return globalThis.crypto.subtle.importKey(
-    'raw',
-    buf,
-    { name: 'AES-GCM' },
-    false,
-    ['encrypt', 'decrypt'],
-  );
 }
 
 /**
@@ -58,30 +35,24 @@ async function importAesKey(raw: Uint8Array): Promise<CryptoKey> {
  *
  * @example
  * ```ts
- * const packet = await encrypt('hello', recipientPubBytes);
+ * const packet = encrypt('hello', recipientPubBytes);
  * ```
  */
-export async function encrypt(
+export function encrypt(
   plaintext: string,
   recipientX25519Pub: Uint8Array,
-): Promise<Uint8Array> {
+): Uint8Array {
   try {
     const ephemeralPriv = x25519.utils.randomPrivateKey();
     const ephemeralPub = x25519.getPublicKey(ephemeralPriv);
     const shared = x25519.getSharedSecret(ephemeralPriv, recipientX25519Pub);
 
-    const aesKeyRaw = deriveAesKey(shared);
-    const aesKey = await importAesKey(aesKeyRaw);
+    const aesKey = deriveAesKey(shared);
     const nonce = randomBytes(NONCE_LENGTH);
 
     const plaintextBytes = new TextEncoder().encode(plaintext);
-    const ciphertext = new Uint8Array(
-      await globalThis.crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv: toArrayBuffer(nonce) },
-        aesKey,
-        toArrayBuffer(plaintextBytes),
-      ),
-    );
+    const cipher = gcm(aesKey, nonce);
+    const ciphertext = cipher.encrypt(plaintextBytes);
 
     // Pack: [ephemeral pub 32] [nonce 12] [ciphertext+tag]
     const packet = new Uint8Array(
@@ -92,6 +63,7 @@ export async function encrypt(
     packet.set(ciphertext, EPHEMERAL_PUB_LENGTH + NONCE_LENGTH);
     return packet;
   } catch (err) {
+    if (err instanceof EncryptionError) throw err;
     throw new EncryptionError(
       `Encryption failed: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -109,13 +81,13 @@ export async function encrypt(
  *
  * @example
  * ```ts
- * const message = await decrypt(packet, myPrivKeyBytes);
+ * const message = decrypt(packet, myPrivKeyBytes);
  * ```
  */
-export async function decrypt(
+export function decrypt(
   packet: Uint8Array,
   recipientX25519Priv: Uint8Array,
-): Promise<string> {
+): string {
   try {
     if (packet.length < EPHEMERAL_PUB_LENGTH + NONCE_LENGTH + 16) {
       throw new Error('Packet too short');
@@ -129,16 +101,9 @@ export async function decrypt(
     const ciphertext = packet.slice(EPHEMERAL_PUB_LENGTH + NONCE_LENGTH);
 
     const shared = x25519.getSharedSecret(recipientX25519Priv, ephemeralPub);
-    const aesKeyRaw = deriveAesKey(shared);
-    const aesKey = await importAesKey(aesKeyRaw);
-
-    const plaintextBytes = new Uint8Array(
-      await globalThis.crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: toArrayBuffer(nonce) },
-        aesKey,
-        toArrayBuffer(ciphertext),
-      ),
-    );
+    const aesKey = deriveAesKey(shared);
+    const cipher = gcm(aesKey, nonce);
+    const plaintextBytes = cipher.decrypt(ciphertext);
 
     return new TextDecoder().decode(plaintextBytes);
   } catch (err) {

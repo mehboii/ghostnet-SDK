@@ -4,6 +4,7 @@ import { Logger } from './logger.js';
 const DEFAULT_RECONNECT_BASE_MS = 1000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_RECONNECT_FACTOR = 2;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 export interface TransportEvents {
   open: () => void;
@@ -175,12 +176,20 @@ export class Transport {
   }
 
   private scheduleReconnect(): void {
+    if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      this.logger.error(`Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached, giving up`);
+      this.emit('error', new ConnectionError(
+        `Failed to reconnect after ${MAX_RECONNECT_ATTEMPTS} attempts`,
+      ));
+      return;
+    }
+
     const delay = Math.min(
       DEFAULT_RECONNECT_BASE_MS * (DEFAULT_RECONNECT_FACTOR ** this.reconnectAttempt),
       DEFAULT_RECONNECT_MAX_MS,
     );
     this.reconnectAttempt++;
-    this.logger.debug(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempt})`);
+    this.logger.debug(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})`);
 
     this.reconnectTimer = setTimeout(() => {
       this.createSocket().catch((err: unknown) => {

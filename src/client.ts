@@ -1,10 +1,13 @@
 import { createIdentity, loadIdentity } from './crypto/identity.js';
+import { encrypt, decrypt, edPrivateToX25519, edPublicToX25519 } from './crypto/encryption.js';
 import { ConnectionError, PeerNotFoundError } from './errors.js';
 import { Logger } from './logger.js';
 import { Transport } from './transport.js';
 import type { GhostNetOptions, GhostNetEvents, Identity, IncomingMessage } from './types.js';
+import { hexToBytes } from '@noble/hashes/utils';
 
 const DEFAULT_ENDPOINT = 'wss://ghostnet-ji-production.up.railway.app';
+const MAX_MESSAGE_BYTES = 64 * 1024; // 64 KB max message payload
 
 /**
  * Main GhostNet SDK client.
@@ -29,6 +32,8 @@ export class GhostNet {
   private readonly logger: Logger;
   private transport: Transport | null = null;
   private identity: Identity | null = null;
+  /** Maps peer nodeId → hex-encoded Ed25519 public key, learned from relay announcements. */
+  private peerKeys: Map<string, string> = new Map();
   private listeners: { [K in keyof GhostNetEvents]: Set<GhostNetEvents[K]> } = {
     message: new Set(),
     error: new Set(),
@@ -37,7 +42,13 @@ export class GhostNet {
   };
 
   constructor(options: GhostNetOptions = {}) {
-    this.endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+    const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+    if (!endpoint.startsWith('wss://')) {
+      throw new ConnectionError(
+        `Insecure WebSocket endpoint rejected: "${endpoint}". Use wss:// for encrypted connections.`,
+      );
+    }
+    this.endpoint = endpoint;
     this.logger = new Logger(options.debug ?? false);
   }
 
@@ -190,20 +201,47 @@ export class GhostNet {
       throw new ConnectionError('Not connected — call .connect() first');
     }
 
-    // TODO: resolve peerId → public key via relay lookup
-    // For v0.1, the relay must return the peer's public key on registration
-    // or we must have exchanged keys out-of-band.
+    const messageBytes = new TextEncoder().encode(message);
+    if (messageBytes.byteLength > MAX_MESSAGE_BYTES) {
+      throw new ConnectionError(
+        `Message too large: ${messageBytes.byteLength} bytes exceeds ${MAX_MESSAGE_BYTES} byte limit`,
+      );
+    }
+
     this.logger.debug(`Sending to ${peerId}: ${message.length} chars`);
 
-    // Placeholder: in v0.1, send via relay as JSON envelope.
-    // Encryption will be wired once the relay protocol is finalised.
-    this.transport.send(JSON.stringify({
-      type: 'message',
-      from: this.identity!.nodeId,
-      to: peerId,
-      payload: message,
-      timestamp: Date.now(),
-    }));
+    // Look up peer's public key from the peer registry
+    const peerPublicKeyHex = this.peerKeys.get(peerId);
+    if (peerPublicKeyHex) {
+      // Encrypt with peer's X25519 public key
+      const peerX25519Pub = edPublicToX25519(hexToBytes(peerPublicKeyHex));
+      const encryptedPayload = encrypt(message, peerX25519Pub);
+      const payloadBase64 = btoa(String.fromCharCode(...encryptedPayload));
+
+      this.transport.send(JSON.stringify({
+        type: 'message',
+        from: this.identity!.nodeId,
+        to: peerId,
+        payload: payloadBase64,
+        encrypted: true,
+        timestamp: Date.now(),
+      }));
+    } else {
+      // Peer key not yet known — send via relay with encryption flag off.
+      // The relay will reject this if the peer requires encryption.
+      this.logger.warn(
+        `No public key for peer ${peerId} — message sent without E2E encryption. ` +
+        `Peer key will be learned on first handshake.`,
+      );
+      this.transport.send(JSON.stringify({
+        type: 'message',
+        from: this.identity!.nodeId,
+        to: peerId,
+        payload: message,
+        encrypted: false,
+        timestamp: Date.now(),
+      }));
+    }
   }
 
   // ── Events ────────────────────────────────────────────────────────
@@ -249,7 +287,20 @@ export class GhostNet {
   private async handleIncoming(raw: Uint8Array | string): Promise<void> {
     const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
 
-    let envelope: { type: string; from?: string; payload?: string; timestamp?: number };
+    if (text.length > MAX_MESSAGE_BYTES * 2) {
+      this.logger.warn('Incoming message exceeds size limit, dropping');
+      return;
+    }
+
+    let envelope: {
+      type: string;
+      from?: string;
+      payload?: string;
+      encrypted?: boolean;
+      timestamp?: number;
+      publicKey?: string;
+      nodeId?: string;
+    };
     try {
       envelope = JSON.parse(text) as typeof envelope;
     } catch {
@@ -257,10 +308,38 @@ export class GhostNet {
       return;
     }
 
+    // Learn peer public keys from relay announcements
+    if (envelope.type === 'peer_announce' && envelope.nodeId && envelope.publicKey) {
+      if (/^[0-9a-f]{64}$/.test(envelope.publicKey)) {
+        this.peerKeys.set(envelope.nodeId, envelope.publicKey);
+        this.logger.debug(`Learned key for peer ${envelope.nodeId}`);
+      }
+    }
+
     if (envelope.type === 'message' && envelope.from && envelope.payload != null) {
+      let data: string;
+
+      if (envelope.encrypted) {
+        // Decrypt the payload using our X25519 private key
+        const privSeed = hexToBytes(this.identity!.privateKey).slice(0, 32);
+        const x25519Priv = edPrivateToX25519(privSeed);
+        const ciphertextBytes = Uint8Array.from(
+          atob(envelope.payload),
+          (c) => c.charCodeAt(0),
+        );
+        data = decrypt(ciphertextBytes, x25519Priv);
+      } else {
+        data = envelope.payload;
+      }
+
+      // Learn the sender's public key if included
+      if (envelope.publicKey && envelope.from && /^[0-9a-f]{64}$/.test(envelope.publicKey)) {
+        this.peerKeys.set(envelope.from, envelope.publicKey);
+      }
+
       const msg: IncomingMessage = {
         from: envelope.from,
-        data: envelope.payload,
+        data,
         timestamp: envelope.timestamp ?? Date.now(),
       };
       this.emit('message', msg);

@@ -21,7 +21,7 @@ describe('GhostNet client', () => {
   });
 
   it('throws ConnectionError when connecting without identity', async () => {
-    const gn = new GhostNet({ endpoint: 'ws://localhost:9999' });
+    const gn = new GhostNet();
     await expect(gn.connect()).rejects.toThrow(ConnectionError);
   });
 
@@ -31,14 +31,22 @@ describe('GhostNet client', () => {
     await expect(gn.send('0xpeer', 'hello')).rejects.toThrow('Not connected');
   });
 
+  it('rejects insecure ws:// endpoints', () => {
+    expect(() => new GhostNet({ endpoint: 'ws://localhost:9999' }))
+      .toThrow('Insecure WebSocket endpoint rejected');
+  });
+
+  it('accepts secure wss:// endpoints', () => {
+    expect(() => new GhostNet({ endpoint: 'wss://relay.example.com' }))
+      .not.toThrow();
+  });
+
   it('registers and fires event listeners', () => {
     const gn = new GhostNet();
     const errors: Error[] = [];
     const handler = (err: Error) => errors.push(err);
 
     gn.on('error', handler);
-    // Simulate: internal emit is private, so we test via connect failure
-    // This test verifies the on/off API shape works
     gn.off('error', handler);
     expect(errors).toHaveLength(0);
   });

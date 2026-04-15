@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { GhostNet, ConnectionError, IdentityError, EncryptionError } from '../src/index.js';
 import { createIdentity, loadIdentity } from '../src/crypto/identity.js';
 import { encrypt, decrypt, edPrivateToX25519, edPublicToX25519 } from '../src/crypto/encryption.js';
-import { hexToBytes } from '@noble/hashes/utils';
+import { hexToBytes, randomBytes } from '@noble/hashes/utils';
 
 describe('Security: Identity attacks', () => {
   it('rejects empty seed phrase', () => {
@@ -63,8 +63,7 @@ describe('Security: Encryption attacks', () => {
 
   it('decrypt fails on random garbage bytes', () => {
     const { priv } = makeRecipientKeys();
-    const garbage = new Uint8Array(128);
-    crypto.getRandomValues(garbage);
+    const garbage = randomBytes(128);
     expect(() => decrypt(garbage, priv)).toThrow(EncryptionError);
   });
 

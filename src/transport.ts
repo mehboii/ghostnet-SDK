@@ -130,6 +130,7 @@ export class Transport {
       // Use native WebSocket in browsers, ws package in Node
       const WS = typeof globalThis.WebSocket !== 'undefined'
         ? globalThis.WebSocket
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- conditional require for Node.js; dynamic import() cannot be used synchronously here
         : (require('ws') as typeof WebSocket);
 
       const ws = new WS(this.url);

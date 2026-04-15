@@ -73,10 +73,40 @@ function deriveIdentity(mnemonic: string): Identity {
   fullPrivateKey.set(privateKeyBytes, 0);
   fullPrivateKey.set(publicKeyBytes, 32);
 
-  return {
+  const privateKeyHex = bytesToHex(fullPrivateKey);
+
+  // Zero out seed material from memory (best-effort in JS)
+  fullPrivateKey.fill(0);
+  seed.fill(0);
+
+  const identity: Identity = {
     seedPhrase: mnemonic,
     publicKey: bytesToHex(publicKeyBytes),
-    privateKey: bytesToHex(fullPrivateKey),
+    privateKey: privateKeyHex,
     nodeId,
   };
+
+  // Prevent private key and seed phrase from leaking via JSON.stringify or console.log.
+  // They are still accessible as properties, but won't appear in serialization.
+  Object.defineProperty(identity, 'privateKey', {
+    value: privateKeyHex,
+    enumerable: false,
+    configurable: false,
+  });
+  Object.defineProperty(identity, 'seedPhrase', {
+    value: mnemonic,
+    enumerable: false,
+    configurable: false,
+  });
+
+  // Custom toJSON to ensure serialization never includes secrets
+  Object.defineProperty(identity, 'toJSON', {
+    value: () => ({
+      publicKey: identity.publicKey,
+      nodeId: identity.nodeId,
+    }),
+    enumerable: false,
+  });
+
+  return identity;
 }

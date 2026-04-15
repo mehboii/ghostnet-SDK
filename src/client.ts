@@ -43,13 +43,41 @@ export class GhostNet {
 
   constructor(options: GhostNetOptions = {}) {
     const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+    this.endpoint = GhostNet.validateEndpoint(endpoint);
+    this.logger = new Logger(options.debug ?? false);
+  }
+
+  /**
+   * Validate and sanitize a WebSocket endpoint URL.
+   * Rejects insecure protocols, embedded credentials, and suspicious paths.
+   */
+  private static validateEndpoint(endpoint: string): string {
     if (!endpoint.startsWith('wss://')) {
       throw new ConnectionError(
         `Insecure WebSocket endpoint rejected: "${endpoint}". Use wss:// for encrypted connections.`,
       );
     }
-    this.endpoint = endpoint;
-    this.logger = new Logger(options.debug ?? false);
+
+    let parsed: URL;
+    try {
+      parsed = new URL(endpoint);
+    } catch {
+      throw new ConnectionError(`Invalid endpoint URL: "${endpoint}"`);
+    }
+
+    if (parsed.username || parsed.password) {
+      throw new ConnectionError(
+        'Endpoint URL must not contain credentials — they leak in logs and referrer headers.',
+      );
+    }
+
+    if (endpoint.includes('..')) {
+      throw new ConnectionError(
+        'Endpoint URL contains path traversal sequence.',
+      );
+    }
+
+    return endpoint;
   }
 
   // ── Identity ──────────────────────────────────────────────────────

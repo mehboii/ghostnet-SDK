@@ -15,6 +15,9 @@ export type {
   GhostNetEvents,
 } from './types.js';
 
+// ── FAQ Chatbot ────────────────────────────────────────────────────
+export { GhostSupportBot } from './lib/GhostFAQ.js';
+
 // ── Errors ──────────────────────────────────────────────────────────
 export {
   GhostNetError,

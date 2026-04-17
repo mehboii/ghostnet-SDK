@@ -1,0 +1,20 @@
+{
+  "name": "create-ghostnet-app",
+  "version": "0.1.0",
+  "description": "Scaffold a new GhostNet SDK project",
+  "license": "MIT",
+  "author": "N11X Labs",
+  "type": "module",
+  "bin": {
+    "create-ghostnet-app": "./index.mjs"
+  },
+  "files": [
+    "index.mjs"
+  ],
+  "keywords": [
+    "ghostnet",
+    "create-app",
+    "scaffold",
+    "cli"
+  ]
+}

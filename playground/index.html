@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GhostNet SDK Playground</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: linear-gradient(135deg, #1e1b4b, #312e81);
+      padding: 24px 32px;
+      border-bottom: 1px solid #4338ca;
+    }
+    header h1 { font-size: 24px; color: #a5b4fc; }
+    header p { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+    .container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      padding: 16px;
+      flex: 1;
+      max-height: calc(100vh - 80px);
+    }
+    .panel {
+      background: #1e293b;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 12px 16px;
+      background: #0f172a;
+      border-bottom: 1px solid #334155;
+      font-size: 13px;
+      font-weight: 600;
+      color: #818cf8;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .panel-body { padding: 16px; flex: 1; overflow-y: auto; }
+    textarea {
+      width: 100%;
+      height: 100%;
+      min-height: 200px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 12px;
+      font-family: inherit;
+      font-size: 13px;
+      resize: none;
+      outline: none;
+    }
+    textarea:focus { border-color: #6366f1; }
+    #output {
+      background: #0f172a;
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.6;
+      min-height: 200px;
+      max-height: 400px;
+      overflow-y: auto;
+      border: 1px solid #334155;
+    }
+    .log-line { margin: 2px 0; }
+    .log-info { color: #38bdf8; }
+    .log-success { color: #4ade80; }
+    .log-error { color: #f87171; }
+    .log-warn { color: #fbbf24; }
+    .log-dim { color: #64748b; }
+    button {
+      background: #4f46e5;
+      color: white;
+      border: none;
+      padding: 8px 20px;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:hover { background: #4338ca; }
+    button:disabled { background: #334155; cursor: not-allowed; }
+    .btn-danger { background: #dc2626; }
+    .btn-danger:hover { background: #b91c1c; }
+    .btn-group { display: flex; gap: 8px; }
+    .field {
+      margin-bottom: 12px;
+    }
+    .field label {
+      display: block;
+      font-size: 11px;
+      color: #94a3b8;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .field input, .field select {
+      width: 100%;
+      padding: 8px 12px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 13px;
+      outline: none;
+    }
+    .field input:focus { border-color: #6366f1; }
+    .identity-card {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .identity-card .label {
+      font-size: 11px;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .identity-card .value {
+      font-size: 13px;
+      color: #a5b4fc;
+      word-break: break-all;
+      margin-bottom: 8px;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+    .status-offline { background: #1e293b; color: #94a3b8; }
+    .status-offline .status-dot { background: #94a3b8; }
+    .status-online { background: #064e3b; color: #4ade80; }
+    .status-online .status-dot { background: #4ade80; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>GhostNet SDK Playground</h1>
+    <p>Interactive demo — test identity, encryption, and messaging in your browser</p>
+  </header>
+
+  <div class="container">
+    <!-- Left Panel: Controls -->
+    <div class="panel">
+      <div class="panel-header">
+        Controls
+        <span id="status" class="status status-offline">
+          <span class="status-dot"></span>
+          Offline
+        </span>
+      </div>
+      <div class="panel-body">
+        <div id="identity-section">
+          <div class="btn-group" style="margin-bottom: 16px;">
+            <button onclick="createId()">Create Identity</button>
+            <button onclick="promptRestore()">Restore from Seed</button>
+          </div>
+          <div id="identity-card" style="display:none;">
+            <div class="identity-card">
+              <div class="label">Node ID</div>
+              <div class="value" id="nodeId"></div>
+              <div class="label">Public Key</div>
+              <div class="value" id="pubKey"></div>
+              <div class="label">Seed Phrase (keep secret!)</div>
+              <div class="value" id="seedPhrase" style="color: #fbbf24;"></div>
+            </div>
+          </div>
+        </div>
+
+        <hr style="border-color: #334155; margin: 16px 0;">
+
+        <div class="field">
+          <label>Peer Node ID</label>
+          <input type="text" id="peerId" placeholder="0x..." disabled>
+        </div>
+        <div class="field">
+          <label>Message</label>
+          <input type="text" id="messageInput" placeholder="Type a message..." disabled>
+        </div>
+        <div class="btn-group">
+          <button id="sendBtn" onclick="sendMsg()" disabled>Send Message</button>
+          <button id="connectBtn" onclick="toggleConnect()" disabled>Connect</button>
+        </div>
+
+        <hr style="border-color: #334155; margin: 16px 0;">
+
+        <h3 style="font-size: 13px; color: #818cf8; margin-bottom: 8px;">Quick Tests</h3>
+        <div class="btn-group" style="flex-wrap: wrap;">
+          <button onclick="testEncryption()">Test Encryption</button>
+          <button onclick="testErrors()">Test Errors</button>
+          <button onclick="testEndpoints()">Test Endpoints</button>
+          <button onclick="runAll()">Run All Tests</button>
+          <button class="btn-danger" onclick="clearOutput()">Clear Log</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel: Output -->
+    <div class="panel">
+      <div class="panel-header">Output</div>
+      <div class="panel-body">
+        <div id="output"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // Import SDK from built dist (serve this directory with a static server)
+    // For the playground, we inline the key functionality
+    window.GhostNet = null;
+    window.currentIdentity = null;
+    window.isConnected = false;
+
+    const output = document.getElementById('output');
+
+    window.log = (msg, type = 'info') => {
+      const line = document.createElement('div');
+      line.className = `log-line log-${type}`;
+      const time = new Date().toLocaleTimeString();
+      line.textContent = `[${time}] ${msg}`;
+      output.appendChild(line);
+      output.scrollTop = output.scrollHeight;
+    };
+
+    window.clearOutput = () => { output.innerHTML = ''; };
+
+    // Load the SDK
+    try {
+      const sdk = await import('../dist/index.js');
+      window.SDK = sdk;
+      log('SDK loaded successfully', 'success');
+      log(`Exports: ${Object.keys(sdk).join(', ')}`, 'dim');
+    } catch (e) {
+      log(`Failed to load SDK: ${e.message}`, 'error');
+      log('Make sure to run "npm run build" first and serve from the repo root', 'warn');
+    }
+
+    window.createId = () => {
+      try {
+        const gn = new SDK.GhostNet({ debug: false });
+        window.GhostNet = gn;
+        const id = gn.createIdentity();
+        window.currentIdentity = id;
+
+        document.getElementById('nodeId').textContent = id.nodeId;
+        document.getElementById('pubKey').textContent = id.publicKey;
+        document.getElementById('seedPhrase').textContent = id.seedPhrase;
+        document.getElementById('identity-card').style.display = 'block';
+        document.getElementById('connectBtn').disabled = false;
+        document.getElementById('peerId').disabled = false;
+        document.getElementById('messageInput').disabled = false;
+
+        log(`Identity created: ${id.nodeId.slice(0, 18)}...`, 'success');
+        log(`Seed phrase: ${id.seedPhrase}`, 'warn');
+      } catch (e) {
+        log(`Error: ${e.message}`, 'error');
+      }
+    };
+
+    window.promptRestore = () => {
+      const seed = prompt('Enter your 12-word seed phrase:');
+      if (!seed) return;
+      try {
+        const gn = new SDK.GhostNet({ debug: false });
+        window.GhostNet = gn;
+        const id = gn.loadIdentity(seed);
+        window.currentIdentity = id;
+
+        document.getElementById('nodeId').textContent = id.nodeId;
+        document.getElementById('pubKey').textContent = id.publicKey;
+        document.getElementById('seedPhrase').textContent = id.seedPhrase;
+        document.getElementById('identity-card').style.display = 'block';
+        document.getElementById('connectBtn').disabled = false;
+
+        log(`Identity restored: ${id.nodeId.slice(0, 18)}...`, 'success');
+      } catch (e) {
+        log(`Restore failed: ${e.message}`, 'error');
+      }
+    };
+
+    window.toggleConnect = async () => {
+      if (!window.GhostNet) return log('Create identity first', 'warn');
+      const btn = document.getElementById('connectBtn');
+      const status = document.getElementById('status');
+
+      if (window.isConnected) {
+        window.GhostNet.disconnect();
+        window.isConnected = false;
+        btn.textContent = 'Connect';
+        status.className = 'status status-offline';
+        status.innerHTML = '<span class="status-dot"></span>Offline';
+        document.getElementById('sendBtn').disabled = true;
+        log('Disconnected', 'warn');
+      } else {
+        try {
+          window.GhostNet.on('connect', () => {
+            window.isConnected = true;
+            btn.textContent = 'Disconnect';
+            status.className = 'status status-online';
+            status.innerHTML = '<span class="status-dot"></span>Online';
+            document.getElementById('sendBtn').disabled = false;
+            log('Connected to relay', 'success');
+          });
+          window.GhostNet.on('message', (msg) => {
+            log(`Message from ${msg.from.slice(0, 18)}...: ${msg.data}`, 'success');
+          });
+          window.GhostNet.on('error', (err) => {
+            log(`Error: ${err.message}`, 'error');
+          });
+          window.GhostNet.on('disconnect', (reason) => {
+            log(`Disconnected: ${reason}`, 'warn');
+          });
+          await window.GhostNet.connect();
+        } catch (e) {
+          log(`Connection failed: ${e.message}`, 'error');
+        }
+      }
+    };
+
+    window.sendMsg = async () => {
+      const peerId = document.getElementById('peerId').value;
+      const message = document.getElementById('messageInput').value;
+      if (!peerId || !message) return log('Enter peer ID and message', 'warn');
+      try {
+        await window.GhostNet.send(peerId, message);
+        log(`Sent to ${peerId.slice(0, 18)}...: ${message}`, 'success');
+        document.getElementById('messageInput').value = '';
+      } catch (e) {
+        log(`Send failed: ${e.message}`, 'error');
+      }
+    };
+
+    window.testEncryption = () => {
+      log('--- Encryption Test ---', 'dim');
+      try {
+        const gn1 = new SDK.GhostNet();
+        const gn2 = new SDK.GhostNet();
+        const id1 = gn1.createIdentity();
+        const id2 = gn2.createIdentity();
+        log(`Alice: ${id1.nodeId.slice(0, 18)}...`, 'info');
+        log(`Bob:   ${id2.nodeId.slice(0, 18)}...`, 'info');
+
+        // Verify deterministic restoration
+        const restored = new SDK.GhostNet().loadIdentity(id1.seedPhrase);
+        if (restored.nodeId === id1.nodeId) {
+          log('Deterministic restore: PASS', 'success');
+        } else {
+          log('Deterministic restore: FAIL', 'error');
+        }
+
+        // Verify JSON safety
+        const json = JSON.parse(JSON.stringify(id1));
+        if (!json.seedPhrase && !json.privateKeyBytes) {
+          log('JSON serialization safety: PASS', 'success');
+        } else {
+          log('JSON serialization safety: FAIL — secrets leaked!', 'error');
+        }
+
+        // Verify dispose
+        const ref = id1.privateKeyBytes;
+        id1.dispose();
+        if (ref.every(b => b === 0)) {
+          log('Key disposal (zeroing): PASS', 'success');
+        } else {
+          log('Key disposal: FAIL', 'error');
+        }
+
+        log('Encryption tests complete', 'success');
+      } catch (e) {
+        log(`Encryption test error: ${e.message}`, 'error');
+      }
+    };
+
+    window.testErrors = () => {
+      log('--- Error Handling Test ---', 'dim');
+      let pass = 0;
+      const errors = [
+        ['ConnectionError', () => new SDK.ConnectionError('test'), 'ERR_CONNECTION'],
+        ['IdentityError', () => new SDK.IdentityError('test'), 'ERR_IDENTITY'],
+        ['EncryptionError', () => new SDK.EncryptionError('test'), 'ERR_ENCRYPTION'],
+        ['PeerNotFoundError', () => new SDK.PeerNotFoundError('0x0'), 'ERR_PEER_NOT_FOUND'],
+        ['PayloadTooLargeError', () => new SDK.PayloadTooLargeError(100000, 65536), 'ERR_PAYLOAD_TOO_LARGE'],
+        ['RelayError', () => new SDK.RelayError('test', 'RATE_LIMIT'), 'ERR_RELAY'],
+        ['ReplayError', () => new SDK.ReplayError('abc123'), 'ERR_REPLAY'],
+        ['PeerVerificationError', () => new SDK.PeerVerificationError('0x0', 'bad sig'), 'ERR_PEER_VERIFICATION'],
+      ];
+      for (const [name, create, code] of errors) {
+        try {
+          const err = create();
+          if (err instanceof SDK.GhostNetError && err.code === code) {
+            log(`${name}: PASS (code=${code})`, 'success');
+            pass++;
+          } else {
+            log(`${name}: FAIL`, 'error');
+          }
+        } catch (e) {
+          log(`${name}: ERROR — ${e.message}`, 'error');
+        }
+      }
+      log(`Error tests: ${pass}/${errors.length} passed`, pass === errors.length ? 'success' : 'error');
+    };
+
+    window.testEndpoints = () => {
+      log('--- Endpoint Validation Test ---', 'dim');
+      let pass = 0;
+      const bad = ['ws://bad.com', 'http://bad.com', 'wss://u:p@bad.com', '', 'garbage'];
+      for (const ep of bad) {
+        try {
+          new SDK.GhostNet({ endpoint: ep });
+          log(`Should reject "${ep}": FAIL`, 'error');
+        } catch (e) {
+          if (e instanceof SDK.ConnectionError) {
+            log(`Rejects "${ep}": PASS`, 'success');
+            pass++;
+          }
+        }
+      }
+      const good = ['wss://relay.example.com', 'wss://relay.example.com:8443'];
+      for (const ep of good) {
+        try {
+          new SDK.GhostNet({ endpoint: ep });
+          log(`Accepts "${ep}": PASS`, 'success');
+          pass++;
+        } catch (e) {
+          log(`Should accept "${ep}": FAIL`, 'error');
+        }
+      }
+      log(`Endpoint tests: ${pass}/${bad.length + good.length} passed`, 'success');
+    };
+
+    window.runAll = () => {
+      clearOutput();
+      log('=== Running All Playground Tests ===', 'info');
+      testEncryption();
+      testErrors();
+      testEndpoints();
+      log('=== All Tests Complete ===', 'info');
+    };
+
+    log('Playground ready. Create an identity to begin.', 'dim');
+  </script>
+</body>
+</html>

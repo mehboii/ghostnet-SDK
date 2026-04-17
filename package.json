@@ -49,6 +49,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:browser": "npx playwright test",
     "test:all": "npm run test && npm run test:integration && npm run test:browser",
+    "bench": "npx tsx benchmarks/crypto.bench.ts",
+    "docs": "typedoc",
     "release": "npm run typecheck && npm run lint && npm run test && npm run build",
     "prepare": "husky"
   },
@@ -65,6 +67,8 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
     "@eslint/js": "^9.39.4",
     "@types/node": "^22.13.0",
     "@types/ws": "^8.5.14",
@@ -72,7 +76,10 @@
     "globals": "^15.14.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
+    "tinybench": "^6.0.0",
     "tsup": "^8.3.6",
+    "tsx": "^4.21.0",
+    "typedoc": "^0.28.19",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0",
     "vitest": "^3.0.5"

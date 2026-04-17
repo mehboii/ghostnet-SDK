@@ -25,4 +25,8 @@ export {
   IdentityError,
   EncryptionError,
   PeerNotFoundError,
+  PayloadTooLargeError,
+  RelayError,
+  ReplayError,
+  PeerVerificationError,
 } from './errors.js';

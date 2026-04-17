@@ -1,0 +1,18 @@
+{
+  "entryPoints": ["src/index.ts"],
+  "out": "docs/api",
+  "name": "@n11x/ghostnet-sdk",
+  "readme": "README.md",
+  "excludeInternal": true,
+  "excludePrivate": true,
+  "excludeProtected": true,
+  "includeVersion": true,
+  "navigationLinks": {
+    "GitHub": "https://github.com/n11x/ghostnet-sdk",
+    "npm": "https://www.npmjs.com/package/@n11x/ghostnet-sdk"
+  },
+  "plugin": [],
+  "theme": "default",
+  "searchInComments": true,
+  "searchInDocuments": true
+}

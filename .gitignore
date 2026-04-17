@@ -27,3 +27,6 @@ Desktop.ini
 
 # Build artifacts
 *.tgz
+
+# Generated docs
+docs/api/

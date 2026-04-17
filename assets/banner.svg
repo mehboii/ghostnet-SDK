@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e1b4b"/>
+    </linearGradient>
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#818cf8"/>
+      <stop offset="100%" style="stop-color:#a78bfa"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="200" rx="12" fill="url(#bg)"/>
+  <!-- Mini ghost icon -->
+  <path d="M80 50 C58 50 45 68 45 88 L45 140 L55 133 L65 140 L75 133 L85 140 L95 133 L105 140 L115 140 L115 88 C115 68 102 50 80 50Z" fill="#6366f1" opacity="0.9"/>
+  <circle cx="68" cy="80" r="6" fill="#0f172a"/>
+  <circle cx="92" cy="80" r="6" fill="#0f172a"/>
+  <circle cx="70" cy="78" r="2.5" fill="#e0e7ff"/>
+  <circle cx="94" cy="78" r="2.5" fill="#e0e7ff"/>
+  <!-- Title -->
+  <text x="145" y="95" font-family="system-ui, -apple-system, sans-serif" font-size="48" font-weight="700" fill="url(#textGrad)">GhostNet SDK</text>
+  <!-- Subtitle -->
+  <text x="145" y="130" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#94a3b8">End-to-end encrypted mesh networking for TypeScript</text>
+  <!-- Badge area -->
+  <text x="145" y="160" font-family="monospace" font-size="12" fill="#64748b">npm install @n11x/ghostnet-sdk</text>
+</svg>

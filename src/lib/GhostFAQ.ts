@@ -20,13 +20,13 @@ const KNOWLEDGE_BASE: Category[] = [
     entries: [
       {
         keywords: ['create', 'account', 'register', 'signup'],
-        phrases: ['create account', 'sign up'],
+        phrases: ['create account', 'sign up', 'create an account', 'make account', 'get started'],
         response:
           'There are no accounts. GhostNet generates a BIP-39 seed phrase (12 words) — that IS your identity. No email, no phone, no server storing your credentials.',
       },
       {
         keywords: ['lose', 'lost', 'forgot', 'recover', 'recovery', 'backup'],
-        phrases: ['lose seed', 'lost seed', 'forgot password', 'seed phrase'],
+        phrases: ['lose seed', 'lost seed', 'forgot password', 'seed phrase', 'lose my seed', 'lost my seed', 'what if i lose'],
         response:
           "It's gone. No recovery, no \"forgot password.\" GhostNet has zero knowledge of your identity. Write it down, store it offline.",
       },
@@ -49,8 +49,8 @@ const KNOWLEDGE_BASE: Category[] = [
           'The PIN is local protection only. Your private key is encrypted with a 6-digit PIN hashed via Argon2id. If someone grabs your device, they still can\'t access your keys without the PIN.',
       },
       {
-        keywords: ['argon2id', 'auth', 'login'],
-        phrases: ['password hash', 'auth work', 'argon2id'],
+        keywords: ['argon2id', 'auth', 'login', 'authentication'],
+        phrases: ['password hash', 'auth work', 'authentication work', 'how does auth', 'how does authentication', 'argon2id'],
         response:
           'GhostNet uses memory-hard Argon2id hashing for identity authentication. This provides robust, quantum-resistant security by requiring significant memory and CPU resources, making brute-force attacks infeasible. Legacy seed phrases are explicitly rejected in favor of this deterministic key-derivation scheme.',
       },
@@ -61,13 +61,13 @@ const KNOWLEDGE_BASE: Category[] = [
     entries: [
       {
         keywords: ['algorithm', 'ed25519', 'x25519', 'hkdf', 'ephemeral'],
-        phrases: ['what encryption', 'encryption does', 'encryption use'],
+        phrases: ['what encryption', 'encryption does', 'encryption use', 'how does encryption', 'encryption work'],
         response:
           'Ed25519 for identity, X25519 ECDH for key exchange, HKDF-SHA256 for key derivation, and AES-256-GCM for message encryption. Every message gets a unique ephemeral key.',
       },
       {
         keywords: ['decrypt'],
-        phrases: ['read my messages', 'ghostnet read', 'can ghostnet see'],
+        phrases: ['read my messages', 'ghostnet read', 'can ghostnet see', 'can ghostnet read', 'see my messages'],
         response:
           'No. Messages are encrypted on your device before they leave. The relay transports ciphertext — it cannot decrypt anything.',
       },
@@ -102,7 +102,7 @@ const KNOWLEDGE_BASE: Category[] = [
     entries: [
       {
         keywords: ['shield'],
-        phrases: ['ghost shield', 'what is ghost shield'],
+        phrases: ['ghost shield', 'what is ghost shield', 'how does ghost shield', 'how does cloaking'],
         response:
           'Ghost Shield is a 3-tier cloaking system that controls how visible you are on the mesh. Stealth (tier 1), Ghost (tier 2), Phantom (tier 3), plus Full Ghost Protocol for maximum anonymity.',
       },
@@ -143,7 +143,7 @@ const KNOWLEDGE_BASE: Category[] = [
     entries: [
       {
         keywords: ['proximity'],
-        phrases: ['proximity connect', 'what is proximity'],
+        phrases: ['proximity connect', 'what is proximity', 'how does proximity'],
         response:
           'Proximity Connect discovers nearby GhostNet users via Bluetooth Low Energy and mDNS — no internet required. Think AirDrop but for encrypted mesh messaging.',
       },
@@ -177,8 +177,8 @@ const KNOWLEDGE_BASE: Category[] = [
     name: 'general',
     entries: [
       {
-        keywords: ['pricing', 'subscription'],
-        phrases: ['ghostnet free', 'is it free', 'how much', 'pricing plan'],
+        keywords: ['pricing', 'subscription', 'free', 'cost'],
+        phrases: ['ghostnet free', 'is it free', 'is ghostnet free', 'how much', 'pricing plan', 'does it cost'],
         response:
           'The Ghost tier is free forever — identity, encryption, messaging. Phantom (\u20B999/mo) and Spectre (\u20B9499/mo) add advanced cloaking, priority relay, and GhostNet Pay.',
       },
@@ -232,6 +232,14 @@ const FALLBACK =
   'Terminal Error: Unrecognized command. No matching intent found in the GhostNet knowledge base. ' +
   'Try asking about authentication, encryption, cloaking, proximity connect, pricing, or platforms.';
 
+function stemMatch(token: string, keyword: string): boolean {
+  if (token === keyword) return true;
+  const shorter = Math.min(token.length, keyword.length);
+  const longer = Math.max(token.length, keyword.length);
+  if (shorter < 4 || shorter / longer < 0.6) return false;
+  return token.startsWith(keyword) || keyword.startsWith(token);
+}
+
 export class GhostSupportBot {
   ask(userInput: string): string {
     const normalized = userInput.toLowerCase().replace(/[^\w\s]/g, '');
@@ -252,8 +260,11 @@ export class GhostSupportBot {
         }
 
         for (const token of tokens) {
-          if (entry.keywords.includes(token)) {
-            score += 2;
+          for (const keyword of entry.keywords) {
+            if (stemMatch(token, keyword)) {
+              score += 2;
+              break;
+            }
           }
         }
 

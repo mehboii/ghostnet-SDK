@@ -1,1 +1,1 @@
-npm audit --audit-level=moderate
+npm run typecheck && npm run test && npm audit --audit-level=high

@@ -1,6 +1,6 @@
 {
   "name": "@n11x/ghostnet-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript SDK for integrating with the GhostNet encrypted mesh network",
   "license": "MIT",
   "author": "N11X Labs",

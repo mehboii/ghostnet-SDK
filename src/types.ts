@@ -4,6 +4,8 @@ export interface GhostNetOptions {
   endpoint?: string;
   /** Enable debug logging to console. Defaults to false. */
   debug?: boolean;
+  /** Require E2E encryption and message signing for all messages. Defaults to true. */
+  requireEncryption?: boolean;
 }
 
 /** An Ed25519 identity on the GhostNet mesh. */
@@ -32,10 +34,18 @@ export interface IncomingMessage {
   timestamp: number;
 }
 
+/** A security-relevant event detected by the client. */
+export interface SecurityEvent {
+  type: string;
+  peerId?: string;
+  detail: string;
+}
+
 /** Event map for the GhostNet client. */
 export interface GhostNetEvents {
   message: (msg: IncomingMessage) => void;
   error: (err: Error) => void;
   connect: () => void;
   disconnect: (reason: string) => void;
+  security: (event: SecurityEvent) => void;
 }

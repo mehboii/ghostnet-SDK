@@ -67,57 +67,60 @@ export function loadIdentity(seedPhrase: string): Identity {
  * String hex representations are only created for public (non-secret) data.
  */
 function deriveIdentity(mnemonic: string): Identity {
-  // Derive seed — seedFromMnemonic zeroes the 64-byte parent
   const seed = seedFromMnemonic(mnemonic);
 
-  // Copy seed into private key buffer (seed is zeroed below)
   const privateKeyBytes = new Uint8Array(32);
   privateKeyBytes.set(seed);
 
   const publicKeyBytes = ed25519.getPublicKey(privateKeyBytes);
 
-  // Node ID = BLAKE3 hash of the raw 32-byte public key, prefixed "0x"
   const nodeIdBytes = blake3(publicKeyBytes);
   const nodeId = '0x' + bytesToHex(nodeIdBytes);
   const publicKey = bytesToHex(publicKeyBytes);
 
-  // Zero the intermediate seed (privateKeyBytes is the live copy now)
   seed.fill(0);
 
   let disposed = false;
+  let seedPhraseRef: string | null = mnemonic;
 
-  const identity: Identity = {
-    seedPhrase: mnemonic,
-    publicKeyBytes: publicKeyBytes,
+  function dispose() {
+    if (!disposed) {
+      privateKeyBytes.fill(0);
+      seedPhraseRef = null;
+      disposed = true;
+    }
+  }
+
+  const identity = {
+    publicKeyBytes,
     publicKey,
     privateKeyBytes,
     nodeId,
-    dispose() {
-      if (!disposed) {
-        privateKeyBytes.fill(0);
-        disposed = true;
-      }
-    },
-  };
+    seedPhrase: mnemonic,
+    dispose,
+  } as Identity;
 
-  // Prevent secret fields from leaking via JSON.stringify or console.log.
   Object.defineProperty(identity, 'privateKeyBytes', {
     value: privateKeyBytes,
     enumerable: false,
     configurable: false,
   });
   Object.defineProperty(identity, 'seedPhrase', {
-    value: mnemonic,
+    get() {
+      if (seedPhraseRef === null) {
+        throw new IdentityError('Identity has been disposed — seed phrase cleared');
+      }
+      return seedPhraseRef;
+    },
     enumerable: false,
     configurable: false,
   });
   Object.defineProperty(identity, 'dispose', {
-    value: identity.dispose,
+    value: dispose,
     enumerable: false,
     configurable: false,
   });
 
-  // Custom toJSON — only public data
   Object.defineProperty(identity, 'toJSON', {
     value: () => ({
       publicKey: identity.publicKey,

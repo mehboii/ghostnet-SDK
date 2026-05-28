@@ -13,6 +13,7 @@ export type {
   Identity,
   IncomingMessage,
   GhostNetEvents,
+  SecurityEvent,
 } from './types.js';
 
 // ── FAQ Chatbot ────────────────────────────────────────────────────

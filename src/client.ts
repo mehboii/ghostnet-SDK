@@ -1,17 +1,18 @@
 import { createIdentity, loadIdentity } from './crypto/identity.js';
 import { encrypt, decrypt, edPrivateToX25519, edPublicToX25519 } from './crypto/encryption.js';
-import { verify } from './crypto/signing.js';
+import { sign, verify } from './crypto/signing.js';
 import { ConnectionError, PeerNotFoundError } from './errors.js';
 import { Logger } from './logger.js';
 import { Transport } from './transport.js';
-import type { GhostNetOptions, GhostNetEvents, Identity, IncomingMessage } from './types.js';
+import type { GhostNetOptions, GhostNetEvents, Identity, IncomingMessage, SecurityEvent } from './types.js';
 import { hexToBytes, bytesToHex, randomBytes } from '@noble/hashes/utils';
 import { blake3 } from '@noble/hashes/blake3';
 
 const DEFAULT_ENDPOINT = 'wss://ghostnet-ji-production.up.railway.app';
 const MAX_MESSAGE_BYTES = 64 * 1024; // 64 KB max message payload
-const NONCE_REGISTRY_MAX = 10_000;   // Max tracked nonces before eviction
+const NONCE_REGISTRY_MAX = 10_000;   // Max tracked nonces before time-based eviction
 const MESSAGE_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes — reject older messages
+const SIGNATURE_VERSION = 'v1';
 
 /**
  * Main GhostNet SDK client.
@@ -34,23 +35,26 @@ const MESSAGE_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes — reject older messages
 export class GhostNet {
   private readonly endpoint: string;
   private readonly logger: Logger;
+  private readonly requireEncryption: boolean;
   private transport: Transport | null = null;
   private identity: Identity | null = null;
   /** Maps peer nodeId → raw 32-byte Ed25519 public key, verified via signature. */
   private peerKeys: Map<string, Uint8Array> = new Map();
-  /** Set of seen message nonces (hex) for replay detection. */
-  private seenNonces: Set<string> = new Set();
+  /** Maps seen nonce (hex) → timestamp for time-based replay detection. */
+  private seenNonces: Map<string, number> = new Map();
   private listeners: { [K in keyof GhostNetEvents]: Set<GhostNetEvents[K]> } = {
     message: new Set(),
     error: new Set(),
     connect: new Set(),
     disconnect: new Set(),
+    security: new Set(),
   };
 
   constructor(options: GhostNetOptions = {}) {
     const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
     this.endpoint = GhostNet.validateEndpoint(endpoint);
     this.logger = new Logger(options.debug ?? false);
+    this.requireEncryption = options.requireEncryption ?? true;
   }
 
   /**
@@ -95,13 +99,6 @@ export class GhostNet {
    * only way to restore this identity on another device.
    *
    * @returns The newly created {@link Identity}.
-   *
-   * @example
-   * ```ts
-   * const id = gn.createIdentity();
-   * console.log('Save this:', id.seedPhrase);
-   * console.log('Your node ID:', id.nodeId);
-   * ```
    */
   createIdentity(): Identity {
     this.identity = createIdentity();
@@ -118,12 +115,6 @@ export class GhostNet {
    * @param seedPhrase - A valid 12-word BIP-39 mnemonic.
    * @returns The restored {@link Identity}.
    * @throws {IdentityError} If the seed phrase is invalid.
-   *
-   * @example
-   * ```ts
-   * const id = gn.loadIdentity('abandon ability able about above absent ...');
-   * console.log(id.nodeId); // same as when originally created
-   * ```
    */
   loadIdentity(seedPhrase: string): Identity {
     this.identity = loadIdentity(seedPhrase);
@@ -133,13 +124,6 @@ export class GhostNet {
 
   /**
    * Get the current identity, or null if none has been created/loaded.
-   *
-   * @example
-   * ```ts
-   * if (gn.getIdentity()) {
-   *   console.log('Ready:', gn.getIdentity()!.nodeId);
-   * }
-   * ```
    */
   getIdentity(): Identity | null {
     return this.identity;
@@ -154,12 +138,6 @@ export class GhostNet {
    * The connection authenticates by announcing the node ID to the relay.
    *
    * @throws {ConnectionError} If no identity is set or the connection fails.
-   *
-   * @example
-   * ```ts
-   * gn.createIdentity();
-   * await gn.connect();
-   * ```
    */
   async connect(): Promise<void> {
     if (!this.identity) {
@@ -169,7 +147,6 @@ export class GhostNet {
     this.transport = new Transport(this.endpoint, this.logger);
 
     this.transport.on('open', () => {
-      // Announce ourselves to the relay
       this.transport!.send(JSON.stringify({
         type: 'register',
         nodeId: this.identity!.nodeId,
@@ -199,11 +176,6 @@ export class GhostNet {
    * Disconnect from the GhostNet relay.
    *
    * Safe to call even if not connected. Does not clear the identity.
-   *
-   * @example
-   * ```ts
-   * gn.disconnect();
-   * ```
    */
   disconnect(): void {
     this.transport?.disconnect();
@@ -214,24 +186,19 @@ export class GhostNet {
   // ── Messaging ─────────────────────────────────────────────────────
 
   /**
-   * Send an end-to-end encrypted message to a peer by node ID.
+   * Send an end-to-end encrypted, signed message to a peer by node ID.
    *
    * The message is encrypted with the recipient's public key using hybrid
-   * encryption (X25519 ECDH + AES-256-GCM). The relay cannot read it.
+   * encryption (X25519 ECDH + AES-256-GCM) and signed with Ed25519.
+   * The relay cannot read or forge messages.
    *
    * @param peerId  - The recipient's node ID (0x-prefixed BLAKE3 hash).
    * @param message - The plaintext message string.
    * @throws {ConnectionError} If not connected.
-   * @throws {PeerNotFoundError} If the relay reports the peer as unknown.
+   * @throws {PeerNotFoundError} If peer key is unknown and requireEncryption is true.
    * @throws {EncryptionError} If encryption fails.
-   *
-   * @example
-   * ```ts
-   * await gn.send('0x7f3a...', 'hey, private message!');
-   * ```
    */
   async send(peerId: string, message: string): Promise<void> {
-    // Fix TOCTOU: capture transport reference before the check
     const transport = this.transport;
     if (!transport?.connected) {
       throw new ConnectionError('Not connected — call .connect() first');
@@ -246,42 +213,55 @@ export class GhostNet {
 
     this.logger.debug(`Sending to ${peerId}: ${message.length} chars`);
 
-    // Generate a unique nonce for replay protection
     const nonce = bytesToHex(randomBytes(16));
+    const timestamp = Date.now();
 
     const peerPubBytes = this.peerKeys.get(peerId);
-    if (peerPubBytes) {
-      // Encrypt with peer's X25519 public key
-      const peerX25519Pub = edPublicToX25519(peerPubBytes);
-      const encryptedPayload = encrypt(message, peerX25519Pub);
 
-      // Chunked base64 encoding to avoid call stack overflow on large payloads
-      const payloadBase64 = uint8ToBase64(encryptedPayload);
+    if (!peerPubBytes) {
+      if (this.requireEncryption) {
+        throw new PeerNotFoundError(peerId);
+      }
 
-      transport.send(JSON.stringify({
-        type: 'message',
-        from: this.identity!.nodeId,
-        to: peerId,
-        payload: payloadBase64,
-        encrypted: true,
-        nonce,
-        timestamp: Date.now(),
-      }));
-    } else {
-      this.logger.warn(
-        `No verified public key for peer ${peerId} — message sent without E2E encryption. ` +
-        `Peer key will be learned on first verified handshake.`,
+      this.emitSecurity(
+        'plaintext_fallback',
+        `No verified key for peer ${peerId} — sending without E2E encryption`,
+        peerId,
       );
+
+      const payload = message;
+      const sig = this.signEnvelope(nonce, timestamp, this.identity!.nodeId, peerId, payload);
+
       transport.send(JSON.stringify({
         type: 'message',
         from: this.identity!.nodeId,
         to: peerId,
-        payload: message,
+        payload,
         encrypted: false,
         nonce,
-        timestamp: Date.now(),
+        timestamp,
+        signature: sig,
+        senderPublicKey: this.identity!.publicKey,
       }));
+      return;
     }
+
+    const peerX25519Pub = edPublicToX25519(peerPubBytes);
+    const encryptedPayload = encrypt(message, peerX25519Pub);
+    const payloadBase64 = uint8ToBase64(encryptedPayload);
+    const sig = this.signEnvelope(nonce, timestamp, this.identity!.nodeId, peerId, payloadBase64);
+
+    transport.send(JSON.stringify({
+      type: 'message',
+      from: this.identity!.nodeId,
+      to: peerId,
+      payload: payloadBase64,
+      encrypted: true,
+      nonce,
+      timestamp,
+      signature: sig,
+      senderPublicKey: this.identity!.publicKey,
+    }));
   }
 
   // ── Events ────────────────────────────────────────────────────────
@@ -289,19 +269,8 @@ export class GhostNet {
   /**
    * Subscribe to a GhostNet event.
    *
-   * @param event   - Event name: "message", "error", "connect", or "disconnect".
+   * @param event   - Event name: "message", "error", "connect", "disconnect", or "security".
    * @param handler - Callback invoked when the event fires.
-   *
-   * @example
-   * ```ts
-   * gn.on('message', (msg) => {
-   *   console.log(`${msg.from}: ${msg.data}`);
-   * });
-   *
-   * gn.on('error', (err) => console.error(err));
-   * gn.on('connect', () => console.log('online'));
-   * gn.on('disconnect', (reason) => console.log('offline:', reason));
-   * ```
    */
   on<K extends keyof GhostNetEvents>(event: K, handler: GhostNetEvents[K]): void {
     this.listeners[event].add(handler);
@@ -312,11 +281,6 @@ export class GhostNet {
    *
    * @param event   - Event name.
    * @param handler - The same function reference passed to {@link on}.
-   *
-   * @example
-   * ```ts
-   * gn.off('message', myHandler);
-   * ```
    */
   off<K extends keyof GhostNetEvents>(event: K, handler: GhostNetEvents[K]): void {
     this.listeners[event].delete(handler);
@@ -325,20 +289,43 @@ export class GhostNet {
   // ── Internals ─────────────────────────────────────────────────────
 
   /**
-   * Check and record a message nonce. Returns false if replayed.
+   * Produce an Ed25519 signature hex over the canonical message envelope.
    */
-  private checkNonce(nonce: string): boolean {
+  private signEnvelope(
+    nonce: string,
+    timestamp: number,
+    from: string,
+    to: string,
+    payload: string,
+  ): string {
+    const payloadHash = bytesToHex(blake3(new TextEncoder().encode(payload)));
+    const canonical = new TextEncoder().encode(
+      `ghostnet:msg:${SIGNATURE_VERSION}:${nonce}:${timestamp}:${from}:${to}:${payloadHash}`,
+    );
+    return bytesToHex(sign(canonical, this.identity!.privateKeyBytes));
+  }
+
+  /**
+   * Check and record a message nonce. Returns false if replayed.
+   * Uses time-based expiration instead of count-based eviction to prevent
+   * nonce-flood replay attacks.
+   */
+  private checkNonce(nonce: string, timestamp: number): boolean {
     if (this.seenNonces.has(nonce)) {
       return false;
     }
-    this.seenNonces.add(nonce);
-    // Evict oldest entries when registry is full
-    if (this.seenNonces.size > NONCE_REGISTRY_MAX) {
-      const first = this.seenNonces.values().next().value;
-      if (first !== undefined) {
-        this.seenNonces.delete(first);
+
+    // Time-based eviction: remove nonces older than MESSAGE_MAX_AGE_MS
+    if (this.seenNonces.size > NONCE_REGISTRY_MAX / 2) {
+      const now = Date.now();
+      for (const [n, t] of this.seenNonces) {
+        if (now - t > MESSAGE_MAX_AGE_MS) {
+          this.seenNonces.delete(n);
+        }
       }
     }
+
+    this.seenNonces.set(nonce, timestamp);
     return true;
   }
 
@@ -348,18 +335,18 @@ export class GhostNet {
    * The announce must include:
    *   - nodeId: claimed node ID
    *   - publicKey: hex-encoded Ed25519 public key
-   *   - signature: hex-encoded Ed25519 signature over the message "ghostnet:announce:<nodeId>"
+   *   - signature: hex-encoded Ed25519 signature over "ghostnet:announce:<nodeId>"
    *
    * We verify that:
    *   1. The signature is valid for the claimed public key
    *   2. The nodeId is the BLAKE3 hash of the public key (binding)
+   *   3. TOFU: if we already have a key for this peer, it must match
    */
   private verifyPeerAnnounce(
     nodeId: string,
     publicKeyHex: string,
     signatureHex: string,
   ): Uint8Array | null {
-    // Validate hex format
     if (!/^[0-9a-f]{64}$/.test(publicKeyHex)) {
       this.logger.warn(`Invalid public key format from peer ${nodeId}`);
       return null;
@@ -372,21 +359,94 @@ export class GhostNet {
     const pubBytes = hexToBytes(publicKeyHex);
     const sigBytes = hexToBytes(signatureHex);
 
-    // Verify: the nodeId must be the BLAKE3 hash of this public key
     const expectedNodeId = '0x' + bytesToHex(blake3(pubBytes));
     if (expectedNodeId !== nodeId) {
       this.logger.warn(`Peer ${nodeId}: public key does not match node ID (expected ${expectedNodeId})`);
       return null;
     }
 
-    // Verify signature over canonical announce message
     const announceMsg = new TextEncoder().encode(`ghostnet:announce:${nodeId}`);
     if (!verify(sigBytes, announceMsg, pubBytes)) {
       this.logger.warn(`Peer ${nodeId}: invalid signature on announce`);
       return null;
     }
 
+    // TOFU: reject key changes for known peers
+    const existingKey = this.peerKeys.get(nodeId);
+    if (existingKey && bytesToHex(existingKey) !== publicKeyHex) {
+      this.emitSecurity(
+        'peer_key_changed',
+        `Peer ${nodeId} announced a different public key — rejecting (TOFU violation)`,
+        nodeId,
+      );
+      return null;
+    }
+
     return pubBytes;
+  }
+
+  /**
+   * Verify an Ed25519 signature on an incoming message envelope.
+   * Also performs TOFU key pinning when signature is valid.
+   */
+  private verifyMessageSignature(envelope: {
+    from?: string;
+    to?: string;
+    nonce?: string;
+    timestamp?: number;
+    payload?: string;
+    signature?: string;
+    senderPublicKey?: string;
+  }): boolean {
+    if (
+      !envelope.senderPublicKey ||
+      !envelope.signature ||
+      !envelope.from ||
+      !envelope.nonce ||
+      envelope.timestamp == null ||
+      envelope.payload == null
+    ) {
+      return false;
+    }
+
+    if (!/^[0-9a-f]{64}$/.test(envelope.senderPublicKey)) return false;
+    if (!/^[0-9a-f]{128}$/.test(envelope.signature)) return false;
+
+    const pubBytes = hexToBytes(envelope.senderPublicKey);
+
+    // Verify nodeId ↔ publicKey binding via BLAKE3
+    const expectedNodeId = '0x' + bytesToHex(blake3(pubBytes));
+    if (expectedNodeId !== envelope.from) {
+      return false;
+    }
+
+    // Reconstruct the canonical signed message
+    const payloadHash = bytesToHex(blake3(new TextEncoder().encode(envelope.payload)));
+    const canonical = new TextEncoder().encode(
+      `ghostnet:msg:${SIGNATURE_VERSION}:${envelope.nonce}:${envelope.timestamp}:${envelope.from}:${envelope.to ?? ''}:${payloadHash}`,
+    );
+
+    if (!verify(hexToBytes(envelope.signature), canonical, pubBytes)) {
+      return false;
+    }
+
+    // TOFU: register or verify peer key
+    const existingKey = this.peerKeys.get(envelope.from);
+    if (existingKey) {
+      if (bytesToHex(existingKey) !== envelope.senderPublicKey) {
+        this.emitSecurity(
+          'peer_key_changed',
+          `Peer ${envelope.from} message signed with different key — rejecting (TOFU violation)`,
+          envelope.from,
+        );
+        return false;
+      }
+    } else {
+      this.peerKeys.set(envelope.from, pubBytes);
+      this.logger.debug(`TOFU: stored key for peer ${envelope.from} from signed message`);
+    }
+
+    return true;
   }
 
   private async handleIncoming(raw: Uint8Array | string): Promise<void> {
@@ -400,12 +460,14 @@ export class GhostNet {
     let envelope: {
       type: string;
       from?: string;
+      to?: string;
       payload?: string;
       encrypted?: boolean;
       timestamp?: number;
       publicKey?: string;
       nodeId?: string;
       signature?: string;
+      senderPublicKey?: string;
       nonce?: string;
     };
     try {
@@ -431,32 +493,74 @@ export class GhostNet {
         this.peerKeys.set(envelope.nodeId, verifiedPub);
         this.logger.debug(`Verified and stored key for peer ${envelope.nodeId}`);
       }
-      // Unsigned or invalid announces are silently dropped
     }
 
-    // ── message: replay check, timestamp check, decrypt ──
+    // ── message: require nonce+timestamp, verify signature, decrypt ──
     if (envelope.type === 'message' && envelope.from && envelope.payload != null) {
-      // Replay protection: check nonce
-      if (envelope.nonce) {
-        if (!this.checkNonce(envelope.nonce)) {
-          this.logger.warn(`Replayed message from ${envelope.from}, dropping (nonce: ${envelope.nonce})`);
-          return;
-        }
+      // FIX VULN-02: Require nonce — reject messages without replay protection
+      if (!envelope.nonce) {
+        this.emitSecurity(
+          'missing_nonce',
+          `Message from ${envelope.from} has no nonce — dropping`,
+          envelope.from,
+        );
+        return;
+      }
+
+      // FIX VULN-02: Require timestamp — reject messages without freshness proof
+      if (envelope.timestamp == null) {
+        this.emitSecurity(
+          'missing_timestamp',
+          `Message from ${envelope.from} has no timestamp — dropping`,
+          envelope.from,
+        );
+        return;
+      }
+
+      // FIX VULN-03: Time-based nonce registry prevents flood-eviction replay
+      if (!this.checkNonce(envelope.nonce, envelope.timestamp)) {
+        this.emitSecurity(
+          'replay_detected',
+          `Replayed message from ${envelope.from} (nonce: ${envelope.nonce})`,
+          envelope.from,
+        );
+        return;
       }
 
       // Timestamp freshness check
-      if (envelope.timestamp) {
-        const age = Math.abs(Date.now() - envelope.timestamp);
-        if (age > MESSAGE_MAX_AGE_MS) {
-          this.logger.warn(`Stale message from ${envelope.from} (age: ${Math.round(age / 1000)}s), dropping`);
+      const age = Math.abs(Date.now() - envelope.timestamp);
+      if (age > MESSAGE_MAX_AGE_MS) {
+        this.emitSecurity(
+          'stale_message',
+          `Stale message from ${envelope.from} (age: ${Math.round(age / 1000)}s)`,
+          envelope.from,
+        );
+        return;
+      }
+
+      // FIX VULN-04: Verify sender signature — prevents identity spoofing
+      if (envelope.signature && envelope.senderPublicKey) {
+        if (!this.verifyMessageSignature(envelope)) {
+          this.emitSecurity(
+            'signature_invalid',
+            `Invalid message signature from ${envelope.from} — dropping`,
+            envelope.from,
+          );
           return;
         }
+      } else if (this.requireEncryption) {
+        // FIX VULN-04/05: In strict mode, reject unsigned messages
+        this.emitSecurity(
+          'unsigned_message',
+          `Unsigned message from ${envelope.from} — dropping (requireEncryption=true)`,
+          envelope.from,
+        );
+        return;
       }
 
       let data: string;
 
       if (envelope.encrypted) {
-        // Decrypt the payload using our X25519 private key
         const x25519Priv = edPrivateToX25519(this.identity!.privateKeyBytes);
         const ciphertextBytes = base64ToUint8(envelope.payload);
         data = decrypt(ciphertextBytes, x25519Priv);
@@ -467,7 +571,7 @@ export class GhostNet {
       const msg: IncomingMessage = {
         from: envelope.from,
         data,
-        timestamp: envelope.timestamp ?? Date.now(),
+        timestamp: envelope.timestamp,
       };
       this.emit('message', msg);
     }
@@ -480,6 +584,15 @@ export class GhostNet {
         this.emit('error', new ConnectionError(errPayload));
       }
     }
+  }
+
+  /**
+   * Emit a security event. Always logs (regardless of debug mode) and
+   * always fires the 'security' event so callers can react.
+   */
+  private emitSecurity(type: string, detail: string, peerId?: string): void {
+    console.warn(`[GhostNet:Security] ${detail}`);
+    this.emit('security', { type, peerId, detail } as SecurityEvent);
   }
 
   private emit<K extends keyof GhostNetEvents>(

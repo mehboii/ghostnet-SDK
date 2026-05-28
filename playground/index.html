@@ -229,9 +229,8 @@
     </div>
   </div>
 
+  <script src="../dist/index.browser.js"></script>
   <script type="module">
-    // Import SDK from built dist (serve this directory with a static server)
-    // For the playground, we inline the key functionality
     window.GhostNet = null;
     window.currentIdentity = null;
     window.isConnected = false;
@@ -249,15 +248,15 @@
 
     window.clearOutput = () => { output.innerHTML = ''; };
 
-    // Load the SDK
+    // Load SDK from the IIFE browser bundle (window.GhostNetSDK)
     try {
-      const sdk = await import('../dist/index.js');
-      window.SDK = sdk;
+      window.SDK = window.GhostNetSDK;
+      if (!SDK || !SDK.GhostNet) throw new Error('GhostNetSDK not found on window');
       log('SDK loaded successfully', 'success');
-      log(`Exports: ${Object.keys(sdk).join(', ')}`, 'dim');
+      log(`Exports: ${Object.keys(SDK).join(', ')}`, 'dim');
     } catch (e) {
       log(`Failed to load SDK: ${e.message}`, 'error');
-      log('Make sure to run "npm run build" first and serve from the repo root', 'warn');
+      log('Run "npm run build" first, then "npx serve ." from the repo root', 'warn');
     }
 
     window.createId = () => {

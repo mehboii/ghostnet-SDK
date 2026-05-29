@@ -146,4 +146,5 @@ The following features are planned for future releases:
 
 ## License
 
-[MIT](./LICENSE) — N11X Labs
+[MIT](./LICENSE) — N11X Collective
+

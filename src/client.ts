@@ -307,22 +307,34 @@ export class GhostNet {
 
   /**
    * Check and record a message nonce. Returns false if replayed.
-   * Uses time-based expiration instead of count-based eviction to prevent
-   * nonce-flood replay attacks.
+   * Uses time-based expiration (instead of count-based eviction) to prevent
+   * nonce-flood replay attacks, with a hard cap as a memory safety net.
+   *
+   * Call this only after a message has passed freshness and signature
+   * checks, so the registry is never polluted by forged or stale traffic.
    */
   private checkNonce(nonce: string, timestamp: number): boolean {
     if (this.seenNonces.has(nonce)) {
       return false;
     }
 
-    // Time-based eviction: remove nonces older than MESSAGE_MAX_AGE_MS
-    if (this.seenNonces.size > NONCE_REGISTRY_MAX / 2) {
+    // Time-based eviction: remove nonces older than the freshness window.
+    if (this.seenNonces.size >= NONCE_REGISTRY_MAX / 2) {
       const now = Date.now();
       for (const [n, t] of this.seenNonces) {
         if (now - t > MESSAGE_MAX_AGE_MS) {
           this.seenNonces.delete(n);
         }
       }
+    }
+
+    // Hard cap: under sustained high throughput, many nonces may still be
+    // within the freshness window and survive the sweep above. Evict the
+    // oldest entries (Map preserves insertion order) to bound memory.
+    while (this.seenNonces.size >= NONCE_REGISTRY_MAX) {
+      const oldest = this.seenNonces.keys().next().value;
+      if (oldest === undefined) break;
+      this.seenNonces.delete(oldest);
     }
 
     this.seenNonces.set(nonce, timestamp);
@@ -517,17 +529,7 @@ export class GhostNet {
         return;
       }
 
-      // FIX VULN-03: Time-based nonce registry prevents flood-eviction replay
-      if (!this.checkNonce(envelope.nonce, envelope.timestamp)) {
-        this.emitSecurity(
-          'replay_detected',
-          `Replayed message from ${envelope.from} (nonce: ${envelope.nonce})`,
-          envelope.from,
-        );
-        return;
-      }
-
-      // Timestamp freshness check
+      // Timestamp freshness check (cheap, no state mutation — do this first)
       const age = Math.abs(Date.now() - envelope.timestamp);
       if (age > MESSAGE_MAX_AGE_MS) {
         this.emitSecurity(
@@ -553,6 +555,18 @@ export class GhostNet {
         this.emitSecurity(
           'unsigned_message',
           `Unsigned message from ${envelope.from} — dropping (requireEncryption=true)`,
+          envelope.from,
+        );
+        return;
+      }
+
+      // FIX VULN-03: Record the nonce LAST — only fresh, authenticated
+      // messages consume registry space, so forged/stale traffic can neither
+      // pollute the registry nor "burn" a nonce a legitimate sender will use.
+      if (!this.checkNonce(envelope.nonce, envelope.timestamp)) {
+        this.emitSecurity(
+          'replay_detected',
+          `Replayed message from ${envelope.from} (nonce: ${envelope.nonce})`,
           envelope.from,
         );
         return;

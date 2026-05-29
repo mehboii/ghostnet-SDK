@@ -6,6 +6,14 @@ const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const DEFAULT_RECONNECT_FACTOR = 2;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
+/**
+ * WebSocket `readyState` value for an open connection (per the WHATWG spec).
+ * Referenced as a literal instead of `WebSocket.OPEN` because the global
+ * `WebSocket` is not defined on Node.js < 22, where we fall back to the
+ * `ws` package — reading `WebSocket.OPEN` there would throw a ReferenceError.
+ */
+const WEBSOCKET_OPEN = 1;
+
 export interface TransportEvents {
   open: () => void;
   close: (reason: string) => void;
@@ -113,7 +121,7 @@ export class Transport {
    * ```
    */
   send(data: string | Uint8Array): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== WEBSOCKET_OPEN) {
       throw new ConnectionError('WebSocket is not connected');
     }
     this.ws.send(data);
@@ -121,7 +129,7 @@ export class Transport {
 
   /** Whether the socket is currently open. */
   get connected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.ws?.readyState === WEBSOCKET_OPEN;
   }
 
   private createSocket(): Promise<void> {
@@ -138,19 +146,35 @@ export class Transport {
       // Node ws needs binaryType set for Uint8Array
       ws.binaryType = 'arraybuffer';
 
+      // Track the socket from construction so disconnect() can abort a
+      // connection that is still in the CONNECTING state. `connected` and
+      // `send()` gate on readyState === OPEN, so this is safe before open.
+      this.ws = ws;
+      let settled = false;
+
       ws.onopen = () => {
-        this.ws = ws;
         this.reconnectAttempt = 0;
         this.logger.debug('Connected');
         this.emit('open');
-        resolve();
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
       };
 
       ws.onclose = (event: CloseEvent) => {
         const reason = event.reason || `code ${event.code}`;
         this.logger.debug(`Disconnected: ${reason}`);
-        this.ws = null;
+        if (this.ws === ws) {
+          this.ws = null;
+        }
         this.emit('close', reason);
+
+        // Reject the connect() promise if the socket closed before opening.
+        if (!settled) {
+          settled = true;
+          reject(new ConnectionError(`WebSocket closed before opening: ${reason}`));
+        }
 
         if (!this.intentionalClose) {
           this.scheduleReconnect();
@@ -160,8 +184,9 @@ export class Transport {
       ws.onerror = () => {
         const err = new ConnectionError(`WebSocket error on ${this.url}`);
         this.emit('error', err);
-        // If this is the initial connection attempt, reject the promise.
-        if (!this.ws) {
+        // If the socket never opened, reject the initial connection promise.
+        if (!settled) {
+          settled = true;
           reject(err);
         }
       };

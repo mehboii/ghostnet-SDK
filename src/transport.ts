@@ -49,6 +49,7 @@ export class Transport {
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
+  private everConnected = false;
 
   constructor(url: string, logger: Logger) {
     this.url = url;
@@ -153,6 +154,7 @@ export class Transport {
       let settled = false;
 
       ws.onopen = () => {
+        this.everConnected = true;
         this.reconnectAttempt = 0;
         this.logger.debug('Connected');
         this.emit('open');
@@ -176,7 +178,7 @@ export class Transport {
           reject(new ConnectionError(`WebSocket closed before opening: ${reason}`));
         }
 
-        if (!this.intentionalClose) {
+        if (!this.intentionalClose && this.everConnected) {
           this.scheduleReconnect();
         }
       };

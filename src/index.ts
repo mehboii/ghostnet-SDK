@@ -14,6 +14,8 @@ export type {
   IncomingMessage,
   GhostNetEvents,
   SecurityEvent,
+  PeerInfo,
+  NetworkStatus,
 } from './types.js';
 
 // ── FAQ Chatbot ────────────────────────────────────────────────────
